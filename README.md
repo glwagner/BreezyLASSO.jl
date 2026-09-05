@@ -25,8 +25,10 @@ commit `12d02446a2147388dc89d828e6e0553106abea0f`, 2025-10-24), file by file:
 | `tls` added to `t = T + gz/cp - Lv qˡ/cp`, `qls` to vapor (`forcing.f90`, constant `cp = 1004`) | `large_scale_thermodynamic_forcings`: `ds/dt = cᵖᵐ(q) tls + (cᵖᵛ - cᵖᵈ) T qls` so that `dT/dt = tls` and `dqᵛ/dt = qls` hold in Breeze's `s = cᵖᵐ T + gz - ℒqˡ` (physical-temperature invariant; step-tested) |
 | Upper sponge on `u - ū`, `v - v̄`, `w` (`damping.f90`) | `SAMSponge`: top 30 %, `τ` geometric from 1800 s to 60 s |
 | Top-two-level relaxation of `t`, vapor toward the sounding (`upperbound.f90`) | `upper_boundary_relaxation_forcings`, `τ = 3600 s` |
-| Prescribed H/LE/τ, stress along the domain-mean lowest-level wind (`surface.f90`, `SFC_FLX_FXD`, `SFC_TAU_FXD`) | `prescribed_surface_flux_boundary_conditions` + `PrescribedStressUpdater`; energy flux `H + (cᵖᵛ - cᵖᵈ) SST E` keeps evaporation temperature-neutral |
-| Bulk fluxes from SST (`oceflx.f90`, LASSO `flxsst`) | `bulk_surface_flux_boundary_conditions`: Breeze `PolynomialCoefficient` (Large & Yeager neutral law, identical to `oceflx`'s) with Li et al. (2010) stability; shared SST field also feeds radiation |
+| Prescribed H/LE/τ, stress along the domain-mean lowest-level wind (`surface.f90`, `SFC_FLX_FXD`, `SFC_TAU_FXD`) | `prescribed_surface_flux_boundary_conditions` + `PrescribedStressUpdater` (surface wind `ū + (ug, vg)`); energy flux `H + (cᵖᵛ - cᵖᵈ) SST E` keeps evaporation temperature-neutral |
+| Translating frame: namelist `ug`, `vg` subtracted from initial winds, nudging targets and geostrophic profiles (`setdata.f90`, `forcing.f90`) | `translation_velocity` (preset default from the namelist for prescribed fluxes; refused with bulk fluxes, which need the absolute wind) |
+| Bulk fluxes from SST (`oceflx.f90`, LASSO `flxsst`) | `bulk_surface_flux_boundary_conditions`: an **approximation** — only the neutral drag polynomial coincides; SAM's separate Stanton/Dalton numbers, two MOST iterations and 1 m s⁻¹ wind floor are not reproduced (Breeze uses Li et al. 2010 stability and gustiness). Shared SST field also feeds radiation |
+| Fixed `dt` from the namelist | presets set `Δt = max_Δt = dt` (fixed step); adaptive stepping is an explicit, labelled override |
 | `rad_simple.f90` (F₀ = 113, F₁ = 22 W m⁻², κ = 85, no free-troposphere term) | `SimpleLongwaveRadiation` radiation model (legacy Covert-era control; `:dycoms` variant restores Stevens et al. 2005) |
 | RRTMG LW+SW (official protocol) | Breeze RRTMGP all-sky (`AllSkyOptics`) at the ENA position and date, prescribed effective radii (10 μm liquid, 30 μm ice) |
 | HUJI-SBM two-mode aerosol (`aer1/2/3`) | P3 `AerosolActivation` with the LASSO radii/widths; cm⁻³ → kg⁻¹ using the surface density and a constant mixing ratio with height (`FCCN0 = FCCNR_mp ρ(z)/ρ(0)`); `DiagnosticCCNProjection` reproduces the `diagCCN` reservoir rule |
@@ -44,6 +46,16 @@ diagnosis floors the droplet number above zero, so `Nᶜˡ / (ρ qᶜˡ)` overfl
 `Inf × 0 = NaN` enters the number tendency. The generic fix (threshold the quotient at
 `minimum_mass_mixing_ratio`, plus a Float32/Float64 regression test) lives on the Breeze
 branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins.
+
+### Dependency notes
+
+- The model advects every scalar with explicit WENO (bounds-preserving for mass fractions);
+  the adaptive-implicit vertical advection (`AdaptiveImplicitVerticalAdvection`) whose
+  sedimentation coupling is corrected in Breeze PR 964 is **not** exercised here, so that fix
+  is not required for these runs. Switching to AIVA would require rebasing onto PR 964 first.
+- Oceananigans is held at 0.111. Version 0.112 renames `update_advection_timestep!` and
+  rebuilds bounded WENO; migrating needs explicit compatibility work and scalar-bound
+  regression tests rather than a casual bump.
 
 ## Layout
 
@@ -67,9 +79,10 @@ sbatch scripts/smoke_tests_gpu.sbatch                  # same on one GPU
 sbatch scripts/submit_gpu.sbatch --preset covert_public_bin --microphysics p3_n75 --Nx 256 --Ny 256
 ```
 
-Every run writes `provenance.toml` (input checksums, Breeze/Oceananigans versions, LASSO SAM
-reference commit, and the full configuration record, including the preset label and any
-overrides).
+Every run writes `provenance.toml` (TOML; input checksums including `grd` when present, Breeze
+pinned revision and checkout state, Oceananigans/Julia versions, Manifest checksum, LASSO SAM
+reference commit, and the full configuration record, including the preset label, time-stepping
+mode, translation frame, aerosol chemistry, and any overrides).
 
 ## Presets
 
@@ -89,8 +102,12 @@ overrides).
 - P3 versus HUJI-SBM/Morrison: no bin spectra; the SBM initializes condensate-free with
   `qᵗ = q0` (the default `p3_initialization = :condensate_free` mirrors that; `:equilibrium` is
   a labelled alternative that starts from the 1M control's saturation partition).
-- RRTMGP columns end at the 8.09 km model top (no patched upper atmosphere); effective radii
-  are prescribed, not diagnosed from P3.
+- RRTMGP columns end at the LES top (no radiative-only layers up to TOA as in SAM's RRTMG), so
+  the `:rrtmgp` option is a Breeze *analog* of the official radiation until padded-column
+  fluxes are validated; effective radii are prescribed, not diagnosed from P3.
+- P3 aerosol chemistry is set explicitly to the HUJI-SBM values (density 1790 kg m⁻³,
+  molecular weight 0.115 kg mol⁻¹, van 't Hoff factor 3). The SBM `diagCCN` reservoir rule
+  is applied once per time step (`DiagnosticCCNProjection`), not at every microphysics call.
 - Breeze uses `s = cᵖᵐ(q) T + gz − ℒqˡ` with variable heat capacity where SAM uses `cp = 1004`;
   the forcing and surface-flux adapters keep the physical temperature response identical.
 - Below-surface sounding levels are interpolated through (as SAM does; `exclude_subsurface_levels`

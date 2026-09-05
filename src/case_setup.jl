@@ -11,6 +11,7 @@
 #####
 
 using Dates: Dates, DateTime
+using TOML: TOML
 using Random: MersenneTwister
 using Printf: @sprintf
 using Oceananigans
@@ -40,20 +41,22 @@ P3 takes the number *per unit mass* of air, `nᵃ = 10⁶ N / ρ` [kg⁻¹]. The
 initializes its CCN with a constant *mixing ratio* with height
 (`MICRO_HUJISBM/microphysics.f90`: `FCCN0 = FCCNR_mp * rhocgs(k)/rhocgs(1)`, i.e. a
 surface concentration `N` scaled by `ρ(z)/ρ(0)`), so the conversion uses the surface
-reference density: `number_mixing_ratio = 1e6 N / ρ(0)`, uniform in z. The archive does
-not specify chemistry beyond the size distribution; P3's default ammonium sulfate
-properties are assumed.
+reference density: `number_mixing_ratio = 1e6 N / ρ(0)`, uniform in z. The chemistry is
+set explicitly to the HUJI-SBM values (aerosol density 1790 kg m⁻³, molecular weight
+0.115 kg mol⁻¹, van 't Hoff factor 3) rather than P3's implicit defaults, and recorded.
 """
-function lasso_aerosol_modes(FT=Float64; setting=:aer2, reference_density, kwargs...)
+function lasso_aerosol_modes(FT=Float64; setting=:aer2, reference_density,
+                             aerosol_density=1790, molecular_weight_aerosol=0.115, vant_hoff_factor=3, kwargs...)
     N₁, N₂ = setting === :aer1 ? (138.0, 140.5) :
              setting === :aer2 ? (276.0, 281.0) :
              setting === :aer3 ? (552.0, 562.0) :
              throw(ArgumentError("unknown LASSO aerosol setting $setting (aer1, aer2, aer3)"))
     n₁ = 1e6 * N₁ / reference_density
     n₂ = 1e6 * N₂ / reference_density
-    mode1 = AerosolMode(FT; number_mixing_ratio=n₁, mean_radius=0.018e-6, geometric_std=1.53, kwargs...)
-    mode2 = AerosolMode(FT; number_mixing_ratio=n₂, mean_radius=0.066e-6, geometric_std=1.78, kwargs...)
-    return (mode1, mode2), (; N₁, N₂, n₁, n₂, reference_density)
+    chemistry = (; aerosol_density, molecular_weight_aerosol, vant_hoff_factor)
+    mode1 = AerosolMode(FT; number_mixing_ratio=n₁, mean_radius=0.018e-6, geometric_std=1.53, chemistry..., kwargs...)
+    mode2 = AerosolMode(FT; number_mixing_ratio=n₂, mean_radius=0.066e-6, geometric_std=1.78, chemistry..., kwargs...)
+    return (mode1, mode2), (; N₁, N₂, n₁, n₂, reference_density, chemistry...)
 end
 
 one_moment_extension() = Base.get_extension(Breeze, :BreezeCloudMicrophysicsExt)
@@ -117,7 +120,7 @@ Keyword arguments:
 - `wind_nudging_timescale = 7200` (LASSO n0), `nothing` to disable
 - `vertical_advection`: `:full_field` (SAM subsidence.f90), `:mean_profile` (Breeze
   `SubsidenceForcing`), or `nothing`
-- `sponge = SAMSponge()`, `closure = SmagorinskyLilly()`, `advection_order = 5`
+- `sponge = SAMSponge()`, `closure = :smagorinsky_lilly` (built at the run precision) or any Oceananigans closure / `nothing`, `advection_order = 5`
 - `stop_time = 9hours`, `Δt = 1`, `max_Δt = 10`, `cfl = 0.7`
 - `perturbation = InitialPerturbation()`
 - `output_dir`, `output_prefix`, `profile_interval = 1hour`, `timeseries_interval = 60`,
@@ -145,12 +148,13 @@ function build_case(data_dir;
                               background_atmosphere = BackgroundAtmosphere(CO₂ = 405e-6, CH₄ = 1.85e-6, N₂O = 330e-9),
                               surface = :prescribed_fluxes,
                               wind_nudging_timescale = 7200,
+                              translation_velocity = (0.0, 0.0),
                               vertical_advection = :full_field,
                               geostrophic = true,
                               thermodynamic_tendencies = true,
                               upper_boundary_relaxation = true,
                               sponge = SAMSponge(),
-                              closure = SmagorinskyLilly(),
+                              closure = :smagorinsky_lilly,
                               advection_order = 5,
                               stop_time = 9hours,
                               Δt = 1.0,
@@ -173,6 +177,7 @@ function build_case(data_dir;
                               write_output = true)
 
     Oceananigans.defaults.FloatType = FT
+    closure = closure === :smagorinsky_lilly ? SmagorinskyLilly(FT) : closure
 
     #####
     ##### Inputs
@@ -228,7 +233,22 @@ function build_case(data_dir;
 
     forcing_profiles = LargeScaleForcingProfiles(grid, lsf, z_centers, pᵣ; day0)
 
-    geostrophic_forcing = geostrophic ? time_varying_geostrophic_forcings(forcing_profiles.ug, forcing_profiles.vg) : (; u=nothing, v=nothing)
+    # SAM solves for winds relative to the translating frame (namelist ug, vg): it subtracts
+    # the pair from the initial winds, the nudging targets ul0/vl0 and the geostrophic
+    # profiles ug0/vg0 (forcing.f90, setdata.f90) and adds it back for the surface wind
+    # (surface.f90). Vertical advection, the sponge on u - ū and Coriolis on the relative
+    # wind are frame-invariant. Nonzero translation is supported for prescribed fluxes only.
+    uᶠ, vᶠ = FT.(translation_velocity)
+    translating = !(uᶠ == 0 && vᶠ == 0)
+    translating && surface === :bulk_sst &&
+        throw(ArgumentError("a translating frame needs the surface wind ū + (ug, vg); Breeze's bulk drag uses the model wind, so use surface = :prescribed_fluxes or translation_velocity = (0, 0)"))
+    shifted(fts, shift) = shift == 0 ? fts : shifted_profile_time_series(fts, shift)
+    ug_frame = shifted(forcing_profiles.ug, uᶠ)
+    vg_frame = shifted(forcing_profiles.vg, vᶠ)
+    uls_frame = shifted(forcing_profiles.uls, uᶠ)
+    vls_frame = shifted(forcing_profiles.vls, vᶠ)
+
+    geostrophic_forcing = geostrophic ? time_varying_geostrophic_forcings(ug_frame, vg_frame) : (; u=nothing, v=nothing)
     thermodynamic = thermodynamic_tendencies ?
         large_scale_thermodynamic_forcings(forcing_profiles.tls, forcing_profiles.qls;
                                            microphysics=microphysics_model,
@@ -240,8 +260,8 @@ function build_case(data_dir;
            vertical_advection === :mean_profile ? SubsidenceForcing(mean_profile_subsidence_velocity(grid, forcing_profiles)) :
            nothing
 
-    nudging_u = isnothing(wind_nudging_timescale) ? nothing : MeanProfileNudging(forcing_profiles.uls; timescale=wind_nudging_timescale)
-    nudging_v = isnothing(wind_nudging_timescale) ? nothing : MeanProfileNudging(forcing_profiles.vls; timescale=wind_nudging_timescale)
+    nudging_u = isnothing(wind_nudging_timescale) ? nothing : MeanProfileNudging(uls_frame; timescale=wind_nudging_timescale)
+    nudging_v = isnothing(wind_nudging_timescale) ? nothing : MeanProfileNudging(vls_frame; timescale=wind_nudging_timescale)
 
     upper = if upper_boundary_relaxation
         targets = SoundingTargetProfiles(grid, soundings, z_centers, pᵣ; day0)
@@ -292,7 +312,8 @@ function build_case(data_dir;
         NamedTuple()
     elseif surface === :prescribed_fluxes
         bcs, stress_record = prescribed_surface_flux_boundary_conditions(grid, sfc, day0; thermodynamic_constants=constants,
-                                                                         surface_density, moisture_name, temperature_neutral_evaporation)
+                                                                         surface_density, moisture_name, temperature_neutral_evaporation,
+                                                                         frame_velocity=(uᶠ, vᶠ))
         bcs
     elseif surface === :bulk_sst
         bulk_surface_flux_boundary_conditions(grid, Tₛ; moisture_name)
@@ -344,8 +365,8 @@ function build_case(data_dir;
     δq = perturbation.amplitude_q
     column(values) = reshape(values, 1, 1, Nz)
 
-    u₀ = repeat(column(columns.u), Nx, Ny, 1)
-    v₀ = repeat(column(columns.v), Nx, Ny, 1)
+    u₀ = repeat(column(columns.u .- uᶠ), Nx, Ny, 1)
+    v₀ = repeat(column(columns.v .- vᶠ), Nx, Ny, 1)
 
     if is_p3(microphysics_model)
         if p3_initialization === :condensate_free
@@ -407,15 +428,21 @@ function build_case(data_dir;
                 latitude, longitude, microphysics=string(microphysics), droplet_number,
                 radiation=string(radiation), radiation_interval, liquid_effective_radius, ice_effective_radius,
                 surface=string(surface), wind_nudging_timescale=something(wind_nudging_timescale, 0),
-                vertical_advection=string(vertical_advection), upper_boundary_relaxation, sponge=summary(sponge), closure=summary(closure),
-                advection_order, stop_time, cfl, max_Δt, exclude_subsurface_levels, temperature_neutral_evaporation,
+                translation_velocity_u=uᶠ, translation_velocity_v=vᶠ,
+                vertical_advection=string(vertical_advection), upper_boundary_relaxation,
+                sponge=isnothing(sponge) ? "nothing" : summary(sponge), closure=isnothing(closure) ? "nothing" : summary(closure),
+                advection_order, stop_time, Δt_initial=Δt, cfl, max_Δt,
+                time_stepping = max_Δt == Δt ? "fixed Δt = $Δt s" : "adaptive (initial Δt = $Δt s, CFL wizard cfl = $cfl, max_Δt = $max_Δt s); SAM used fixed dt from the namelist",
+                exclude_subsurface_levels, temperature_neutral_evaporation,
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
                 aerosol_replenishment=string(aerosol_replenishment),
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
 
-    inputs = (; snd=snd_path, lsf=lsf_path, sfc=sfc_path, prm=isfile(prm_path) ? prm_path : nothing)
+    grd_path = joinpath(data_dir, "grd")
+    inputs = (; snd=snd_path, lsf=lsf_path, sfc=sfc_path, prm=isfile(prm_path) ? prm_path : nothing,
+                grd=isfile(grd_path) ? grd_path : nothing)
 
     return (; simulation, model, grid, config, inputs, namelist, soundings, lsf, sfc, profiles,
               forcing_profiles, surface_series, columns, surface_temperature=Tₛ)
@@ -493,36 +520,73 @@ end
 """
     write_provenance(path, case; extra=NamedTuple())
 
-Write a plain-text provenance record: input file paths and SHA-256 checksums, Breeze and
-Oceananigans versions, the LASSO SAM reference commit, and the configuration record.
+Write a TOML provenance record: input file paths and SHA-256 checksums, Breeze (pinned
+revision and checkout state), Oceananigans and Julia versions, the Manifest checksum, the
+LASSO SAM reference commit, and the configuration record (values normalized to TOML
+scalars). Round-trips through `TOML.parsefile`.
 """
 function write_provenance(path, case; extra=NamedTuple())
+    inputs = Dict{String, Any}()
+    for (name, file) in pairs(case.inputs)
+        isnothing(file) && continue
+        inputs[string(name)] = abspath(file)
+        inputs[string(name, "_sha256")] = file_sha256(file)
+    end
+    manifest = joinpath(dirname(dirname(pathof(BreezyLASSO))), "Manifest.toml")
+    software = Dict{String, Any}(
+        "Breeze" => string(Base.pkgversion(Breeze)),
+        "Breeze_source" => breeze_source_description(),
+        "Oceananigans" => string(Base.pkgversion(Oceananigans)),
+        "julia" => string(VERSION),
+        "lasso_sam_reference" => "https://code.arm.gov/lasso/lasso-ena-codes/lasso_sam_sbm.git branch lasso_ena_noice commit 12d02446a2147388dc89d828e6e0553106abea0f")
+    isfile(manifest) && (software["BreezyLASSO_manifest_sha256"] = file_sha256(manifest))
+    record = Dict{String, Any}(
+        "generated" => string(Dates.now()),
+        "preset" => string(get(case, :preset, "none")),
+        "inputs" => inputs,
+        "software" => software,
+        "config" => Dict{String, Any}(string(k) => toml_value(v) for (k, v) in pairs(case.config)),
+        "extra" => Dict{String, Any}(string(k) => toml_value(v) for (k, v) in pairs(extra)))
     open(path, "w") do io
-        println(io, "# BreezyLASSO provenance record")
-        println(io, "generated = \"", string(Dates.now()), "\"")
-        println(io, "\n[inputs]")
-        for (name, file) in pairs(case.inputs)
-            isnothing(file) && continue
-            println(io, name, " = \"", abspath(file), "\"")
-            println(io, name, "_sha256 = \"", file_sha256(file), "\"")
-        end
-        println(io, "\n[software]")
-        println(io, "Breeze = \"", Base.pkgversion(Breeze), "\"")
-        println(io, "Oceananigans = \"", Base.pkgversion(Oceananigans), "\"")
-        println(io, "julia = \"", VERSION, "\"")
-        println(io, "lasso_sam_reference = \"https://code.arm.gov/lasso/lasso-ena-codes/lasso_sam_sbm.git branch lasso_ena_noice commit 12d02446a2147388dc89d828e6e0553106abea0f\"")
-        println(io, "\n[config]")
-        for (name, value) in pairs(case.config)
-            println(io, name, " = ", repr(value))
-        end
-        if !isempty(extra)
-            println(io, "\n[extra]")
-            for (name, value) in pairs(extra)
-                println(io, name, " = ", repr(value))
-            end
-        end
+        TOML.print(io, record)
     end
     return path
+end
+
+toml_value(x::Union{Bool, Integer, AbstractFloat, AbstractString}) = x
+toml_value(x::Symbol) = string(x)
+toml_value(::Nothing) = "nothing"
+toml_value(x::Tuple) = [toml_value(v) for v in x]
+toml_value(x::AbstractVector) = [toml_value(v) for v in x]
+toml_value(x::NamedTuple) = Dict{String, Any}(string(k) => toml_value(v) for (k, v) in pairs(x))
+toml_value(x) = string(x)
+
+# Breeze's pinned git revision (from the active Manifest) and the dirty state of a
+# `dev`ed checkout, if that is how Breeze is being loaded.
+function breeze_source_description()
+    dir = Base.pkgdir(Breeze)
+    manifest = Base.active_project() === nothing ? "" : joinpath(dirname(Base.active_project()), "Manifest.toml")
+    rev = "unknown"
+    if isfile(manifest)
+        text = read(manifest, String)
+        m = match(r"\[\[deps\.Breeze\]\][^\[]*?repo-rev = \"([^\"]+)\"[^\[]*?repo-url = \"([^\"]+)\"", text)
+        isnothing(m) || (rev = string(m.captures[2], "@", m.captures[1]))
+    end
+    dirty = ""
+    if isdir(joinpath(dir, ".git"))
+        status = try
+            read(`git -C $dir status --porcelain`, String)
+        catch
+            ""
+        end
+        head = try
+            strip(read(`git -C $dir rev-parse HEAD`, String))
+        catch
+            "unknown"
+        end
+        dirty = string(" (checkout ", head, isempty(strip(status)) ? ", clean)" : ", DIRTY)")
+    end
+    return string(rev, " at ", dir, dirty)
 end
 
 #####
@@ -540,7 +604,7 @@ function read_sam_grd(path)
     for line in eachline(path)
         t = split(line)
         isempty(t) && continue
-        v = tryparse(Float64, t[1])
+        v = tryparse(Float64, replace(t[1], r"[dD]" => "e"))
         isnothing(v) || push!(values, v)
     end
     isempty(values) && error("no heights found in $path")
@@ -585,8 +649,8 @@ function covert_public_bin_vertical_faces(; Nz=192, top=20000.0, Δz=10.0, unifo
     return faces
 end
 
-function require_namelist!(namelist, keys, preset)
-    missing_keys = [k for k in keys if !haskey(namelist, k)]
+function require_namelist!(namelist, required, preset)
+    missing_keys = [k for k in required if !haskey(namelist, k)]
     isempty(missing_keys) || throw(ArgumentError("preset $preset requires namelist parameters $(missing_keys) (found $(sort(collect(keys(namelist)))))"))
     return nothing
 end
@@ -641,6 +705,9 @@ function lasso_ena_simulation(data_dir; preset = :covert_public_bin, kwargs...)
                       day0 = Float64(namelist["day0"]),
                       latitude = Float64(namelist["latitude0"]), longitude = Float64(namelist["longitude0"]),
                       stop_time = Float64(namelist["nstop"] * namelist["dt"]),
+                      Δt = Float64(namelist["dt"]),
+                      max_Δt = Float64(namelist["dt"]),
+                      translation_velocity = (Float64(get(namelist, "ug", 0.0)), Float64(get(namelist, "vg", 0.0))),
                       microphysics = :p3_n75,
                       radiation = :simple,
                       surface = :prescribed_fluxes,
@@ -666,12 +733,15 @@ function lasso_ena_simulation(data_dir; preset = :covert_public_bin, kwargs...)
         nx = haskey(namelist, "nx_gl") ? namelist["nx_gl"] : 256
         ny = haskey(namelist, "ny_gl") ? namelist["ny_gl"] : 256
         nz = haskey(namelist, "nz_gl") ? namelist["nz_gl"] : length(centers)
-        defaults = (; label = "LASSO-ENA official protocol (samin bundle)",
+        defaults = (; label = "LASSO-ENA official protocol (samin bundle; RRTMGP columns end at the LES top: Breeze analog of RRTMG, not padded to TOA)",
                       Nx = nx, Ny = ny, Lx = nx * namelist["dx"], Ly = ny * namelist["dy"],
                       z_faces = faces_from_centers(centers[1:nz]),
                       day0 = Float64(namelist["day0"]),
                       latitude = Float64(namelist["latitude0"]), longitude = Float64(namelist["longitude0"]),
                       stop_time = Float64(namelist["nstop"] * namelist["dt"]),
+                      Δt = Float64(namelist["dt"]),
+                      max_Δt = Float64(namelist["dt"]),
+                      translation_velocity = (0.0, 0.0), # bulk fluxes use the model wind; a nonzero frame is refused
                       microphysics = :p3_aer2,
                       radiation = :rrtmgp,
                       radiation_interval = Float64(namelist["nrad"] * namelist["dt"]),

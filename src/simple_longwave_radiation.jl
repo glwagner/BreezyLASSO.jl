@@ -78,7 +78,7 @@ function AtmosphereModels._update_radiation!(r::SimpleLongwaveRadiation, model)
     model_fields = fields(model)
     ρ = model.dynamics.reference_state.density
     qᵛ = model_fields.qᵛ
-    qᶜˡ = model_fields.qᶜˡ
+    qᶜˡ = cloud_liquid_mass_fraction(model_fields)
     qⁱ = ice_mass_fraction(model_fields)
     launch!(grid.architecture, grid, :xy, _compute_simple_longwave_flux!,
             r.flux, r.flux_divergence, grid, ρ, qᵛ, qᶜˡ, qⁱ,
@@ -86,8 +86,10 @@ function AtmosphereModels._update_radiation!(r::SimpleLongwaveRadiation, model)
     return nothing
 end
 
-# Warm-phase schemes carry no ice field; P3 does (`qⁱ`).
+# Warm-phase schemes carry no ice field; P3 does (`qⁱ`). Schemes without a separate rain
+# category expose the cloud liquid as `qˡ` rather than `qᶜˡ`.
 ice_mass_fraction(model_fields) = haskey(model_fields, :qⁱ) ? model_fields.qⁱ : ZeroField()
+cloud_liquid_mass_fraction(model_fields) = haskey(model_fields, :qᶜˡ) ? model_fields.qᶜˡ : model_fields.qˡ
 
 @inline face_density(i, j, k, grid, ρ, Nz) = ifelse(k > Nz, @inbounds(ρ[i, j, Nz]), ℑzᵃᵃᶠ(i, j, k, grid, ρ))
 

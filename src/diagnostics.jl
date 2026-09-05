@@ -102,6 +102,9 @@ function cloud_boundaries(qᶜˡ_profile, z; threshold=1e-5)
     return (z[first(cloudy)], z[last(cloudy)])
 end
 
+# Value of a 0-D reduced field, without scalar indexing on the device.
+scalar_value(field) = sum(interior(field))
+
 """
     ProgressMessenger(model; wall_clock=Ref(time_ns()))
 
@@ -128,9 +131,9 @@ end
 function (p::ProgressMessenger)(simulation)
     model = simulation.model
     compute!(p.mean_lwp); compute!(p.cloud_fraction); compute!(p.mean_rain_flux)
-    lwp = first(interior(p.mean_lwp))
-    cf = first(interior(p.cloud_fraction))
-    rain = first(interior(p.mean_rain_flux)) * 86400 # mm/day
+    lwp = scalar_value(p.mean_lwp)
+    cf = scalar_value(p.cloud_fraction)
+    rain = scalar_value(p.mean_rain_flux) * 86400 # mm/day
     wmax = maximum(abs, model.velocities.w)
     qᶜmax = maximum(p.qᶜˡ)
     qʳmax = maximum(p.qʳ)

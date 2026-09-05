@@ -24,13 +24,12 @@ getopt(k, default) = get(opts, k, default)
 
 data = getopt("data", "data/covert2022_bin")
 preset = Symbol(getopt("preset", "covert_public_bin"))
-microphysics = Symbol(getopt("microphysics", "p3_n75"))
 arch = lowercase(getopt("arch", "cpu")) == "gpu" ? GPU() : CPU()
 FT = getopt("float", "Float32") == "Float64" ? Float64 : Float32
-output_dir = getopt("output", "output/$(preset)_$(microphysics)")
 seed = parse(Int, getopt("seed", "1234"))
 
 kw = Dict{Symbol, Any}()
+haskey(opts, "microphysics") && (kw[:microphysics] = Symbol(opts["microphysics"]))   # otherwise the preset decides
 haskey(opts, "Nx") && (kw[:Nx] = parse(Int, opts["Nx"]))
 haskey(opts, "Ny") && (kw[:Ny] = parse(Int, opts["Ny"]))
 haskey(opts, "Lx") && (kw[:Lx] = parse(Float64, opts["Lx"]))
@@ -49,8 +48,10 @@ haskey(opts, "lasso_grid") && opts["lasso_grid"] == "true" && (kw[:z_faces] = la
 haskey(opts, "profile_interval") && (kw[:profile_interval] = parse(Float64, opts["profile_interval"]))
 haskey(opts, "slice_interval") && (kw[:slice_interval] = parse(Float64, opts["slice_interval"]))
 
-@info "Building $preset / $microphysics on $(typeof(arch)) with $FT" opts
-case = lasso_ena_simulation(data; preset, arch, FT, microphysics, output_dir,
+microphysics_label = get(opts, "microphysics", preset === :lasso_ena_official ? "p3_aer2" : "p3_n75")
+output_dir = getopt("output", "output/$(preset)_$(microphysics_label)")
+@info "Building $preset on $(typeof(arch)) with $FT" opts
+case = lasso_ena_simulation(data; preset, arch, FT, output_dir,
                             perturbation = InitialPerturbation(seed=seed), kw...)
 mkpath(output_dir)
 provenance = write_provenance(joinpath(output_dir, "provenance.toml"), case;

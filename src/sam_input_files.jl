@@ -74,13 +74,16 @@ function tokens(line)
     return split(replace(line, ',' => ' '))
 end
 
+# Fortran writes double-precision literals with a `D` exponent (`-4.0D-05`).
+parse_fortran(FT, s) = parse(FT, replace(s, r"[dD]" => "e"))
+
 # Parse a record header of the form "day nlev pres0 ..." — pres0 may be absent in the
 # `snd` header of some SAM versions, in which case we return `NaN` for it.
 function parse_record_header(line, FT)
     t = tokens(line)
-    day = parse(FT, t[1])
+    day = parse_fortran(FT, t[1])
     nlev = parse(Int, t[2])
-    pres0 = length(t) ≥ 3 ? tryparse(FT, t[3]) : nothing
+    pres0 = length(t) ≥ 3 ? tryparse(FT, replace(t[3], r"[dD]" => "e")) : nothing
     pres0 = isnothing(pres0) ? FT(NaN) : pres0
     return day, nlev, pres0
 end
@@ -101,13 +104,13 @@ function read_sam_sounding(path; FT=Float64)
         for n in 1:nlev
             t = tokens(lines[i + n])
             length(t) ≥ 6 || error("snd line $(i + n) has fewer than 6 columns: $(lines[i + n])")
-            zn = parse(FT, t[1])
+            zn = parse_fortran(FT, t[1])
             z[n] = zn ≈ SAM_MISSING_HEIGHT ? FT(NaN) : zn
-            p[n] = 100 * parse(FT, t[2])
-            θ[n] = parse(FT, t[3])
-            q[n] = 1e-3 * parse(FT, t[4])
-            u[n] = parse(FT, t[5])
-            v[n] = parse(FT, t[6])
+            p[n] = 100 * parse_fortran(FT, t[2])
+            θ[n] = parse_fortran(FT, t[3])
+            q[n] = 1e-3 * parse_fortran(FT, t[4])
+            u[n] = parse_fortran(FT, t[5])
+            v[n] = parse_fortran(FT, t[6])
         end
         push!(records, SAMSounding(day, 100 * pres0, z, p, θ, q, u, v))
         i += nlev + 1
@@ -138,17 +141,17 @@ function read_sam_large_scale_forcing(path; FT=Float64)
         for n in 1:nlev
             t = tokens(lines[i + n])
             length(t) == ncol || error("lsf line $(i + n) has $(length(t)) columns; expected $ncol")
-            zn = parse(FT, t[1])
+            zn = parse_fortran(FT, t[1])
             z[n] = zn ≈ SAM_MISSING_HEIGHT ? FT(NaN) : zn
-            p[n] = 100 * parse(FT, t[2])
-            tls[n] = parse(FT, t[3])
-            qls[n] = parse(FT, t[4])
-            uls[n] = parse(FT, t[5])
-            vls[n] = parse(FT, t[6])
-            wls[n] = parse(FT, t[7])
+            p[n] = 100 * parse_fortran(FT, t[2])
+            tls[n] = parse_fortran(FT, t[3])
+            qls[n] = parse_fortran(FT, t[4])
+            uls[n] = parse_fortran(FT, t[5])
+            vls[n] = parse_fortran(FT, t[6])
+            wls[n] = parse_fortran(FT, t[7])
             if has_geostrophic
-                ug[n] = parse(FT, t[8])
-                vg[n] = parse(FT, t[9])
+                ug[n] = parse_fortran(FT, t[8])
+                vg[n] = parse_fortran(FT, t[9])
             else
                 ug[n] = uls[n]
                 vg[n] = vls[n]
@@ -168,7 +171,7 @@ Read a SAM `sfc` file (day, SST, H, LE, τ) into a [`SAMSurfaceForcing`](@ref).
 """
 function read_sam_surface_forcing(path; FT=Float64)
     lines = filter(!is_comment_or_blank, readlines(path))
-    rows = [parse.(FT, tokens(l)) for l in lines[2:end]]
+    rows = [[parse_fortran(FT, x) for x in tokens(l)] for l in lines[2:end]]
     all(length(r) ≥ 5 for r in rows) || error("sfc rows must have 5 columns (day sst H LE tau)")
     day = [r[1] for r in rows]
     sst = [r[2] for r in rows]

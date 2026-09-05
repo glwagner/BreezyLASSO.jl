@@ -6,15 +6,23 @@ using Oceananigans.Units
 using Oceananigans.Units: Time
 using Statistics
 using Random
+using TOML
 
 const FIXTURES = joinpath(@__DIR__, "fixtures")
 const COVERT_DIR = joinpath(@__DIR__, "..", "data", "covert2022_bin")
 const HAVE_COVERT = isfile(joinpath(COVERT_DIR, "snd")) && isfile(joinpath(COVERT_DIR, "lsf")) &&
                     isfile(joinpath(COVERT_DIR, "sfc")) && isfile(joinpath(COVERT_DIR, "prm"))
 
+# The materialized forcing of a prognostic: Breeze wraps specific-keyed forcings in
+# SpecificForcing (and several in MultipleForcings).
+inner(f::Breeze.Forcings.SpecificForcing) = f.forcing
+inner(f) = f
+
 test_grid(; Nx=8, Ny=8, Nz=24, Lz=6000) =
     RectilinearGrid(CPU(), Float64; size=(Nx, Ny, Nz), x=(0, 800), y=(0, 800), z=(0, Lz),
                     halo=(5, 5, 5), topology=(Periodic, Periodic, Bounded))
+
+@testset "BreezyLASSO" begin
 
 @testset "SAM input files" begin
     @testset "sounding on pressure levels" begin
@@ -84,7 +92,12 @@ test_grid(; Nx=8, Ny=8, Nz=24, Lz=6000) =
             @test length(snd) == 4 && length(lsf) == 5 && length(sfc.day) == 5
             @test snd[1].surface_pressure == 101930
             z = record_heights(snd[1])
-            @test isapprox(z[1:3], [-173.8, 35.8, 249.2]; atol=0.1)
+            @test isapprox(z[1:3], [-5.9, 1138.1, 1147.5]; atol=0.1)     # bin-paper snd: 1020, 891, 890 hPa
+            bulk = joinpath(@__DIR__, "..", "data", "covert2022_bulk", "snd")
+            if isfile(bulk)
+                zb = record_heights(read_sam_sounding(bulk)[1])
+                @test isapprox(zb[1:3], [-173.8, 35.8, 249.2]; atol=0.1)  # bulk-paper snd: 1040, 1015, 990 hPa
+            end
             @test !lsf[1].has_geostrophic_columns
             @test prm["caseid"] == "256x256x192" && prm["dx"] == 35.0 && prm["nstop"] * prm["dt"] == 21600
         end
@@ -117,8 +130,10 @@ end
     # top of the domain is above the 700 hPa record top: tls/qls/wls zero, winds held
     @test profiles.tls[1, 1, grid.Nz, Time(0.0)] == 0
     @test profiles.wls[1, 1, grid.Nz, Time(0.0)] == 0
-    @test profiles.uls[1, 1, grid.Nz, Time(0.0)] == 10.0
-    @test profiles.ug[1, 1, grid.Nz, Time(0.0)] == 10.0
+    # winds hold the value of the level below (SAM: uu(iz) = uu(iz-1)) above the record top
+    @test profiles.uls[1, 1, grid.Nz, Time(0.0)] == profiles.uls[1, 1, grid.Nz - 1, Time(0.0)]
+    @test 6 < profiles.uls[1, 1, grid.Nz, Time(0.0)] ≤ 10
+    @test profiles.ug[1, 1, grid.Nz, Time(0.0)] == profiles.uls[1, 1, grid.Nz, Time(0.0)]
     # linear time interpolation between the two records
     @test profiles.tls[1, 1, 1, Time(10800.0)] ≈ (profiles.tls[1, 1, 1, Time(0.0)] + profiles.tls[1, 1, 1, Time(21600.0)]) / 2
     lsf9 = read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_9col_height"))
@@ -223,17 +238,16 @@ end
                                 forcing=(; u=nudge))
         set!(model; T=290.0, qᵗ=5e-3, u=(x, y, z) -> 4 + 0.5 * sin(2π * x / 800))
         Oceananigans.TimeSteppers.update_state!(model)
-        Gu = interior(model.timestepper.Gⁿ.ρu)
         ρ = interior(reference_state.density)
-        expected = ρ .* (-(4 - 8) / 7200)
-        @test all(isapprox.(Gu[:, :, 1:end], expected[:, :, 1:end]; rtol=1e-6)) skip=true
-        f = model.forcing.ρu.forcing
-        @test f isa Breeze.Forcings.SpecificForcing
-        @test f.forcing isa MeanProfileNudging
+        sf = model.forcing.ρu
+        @test sf isa Breeze.Forcings.SpecificForcing
+        f = inner(sf)
+        @test f isa MeanProfileNudging
         # kernel value is horizontally uniform (mean-based), not pointwise
         vals = [f(i, 1, 1, grid, model.clock, Oceananigans.fields(model)) for i in 1:grid.Nx]
         @test all(v ≈ vals[1] for v in vals)
-        @test vals[1] ≈ (8 - 4) / 7200 * ρ[1, 1, 1]
+        @test vals[1] ≈ (8 - 4) / 7200
+        @test sf(1, 1, 1, grid, model.clock, Oceananigans.fields(model)) ≈ (8 - 4) / 7200 * ρ[1, 1, 1]
     end
 
     @testset "time-varying geostrophic forcing" begin
@@ -241,8 +255,8 @@ end
         model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
                                 coriolis=FPlane(f=1e-4), forcing=(; u=geo.u, v=geo.v))
         set!(model; T=290.0, qᵗ=5e-3)
-        fu = model.forcing.ρu.forcing.forcing
-        fv = model.forcing.ρv.forcing.forcing
+        fu = inner(model.forcing.ρu)
+        fv = inner(model.forcing.ρv)
         model.clock.time = 0.0
         @test fv(1, 1, 1, grid, model.clock, Oceananigans.fields(model)) ≈ 1e-4 * 3.0
         model.clock.time = 3600.0
@@ -258,7 +272,7 @@ end
                                 forcing=(; s=vadv, u=vadv))
         set!(model; T=(x, y, z) -> 290 - 0.005z + 0.5 * (x > 400), qᵗ=5e-3, u=(x, y, z) -> 0.001z)
         Oceananigans.TimeSteppers.update_state!(model; compute_tendencies=false)
-        fs = model.forcing.ρs.forcing.forcing
+        fs = inner(model.forcing.ρs)
         fields = Oceananigans.fields(model)
         s = fields.s
         Δz = 6000 / 24
@@ -271,7 +285,7 @@ end
         @test fs(1, 1, 24, grid, model.clock, fields) == 0      # ... and the top cell
         # pointwise: differs between the two halves of the domain
         @test fs(1, 1, 12, grid, model.clock, fields) != fs(8, 1, 12, grid, model.clock, fields) skip=true
-        fu = model.forcing.ρu.forcing.forcing
+        fu = inner(model.forcing.ρu)
         @test fu(1, 1, 12, grid, model.clock, fields) ≈ 0.01 * 0.001
     end
 
@@ -285,14 +299,14 @@ end
         set!(model; T=290.0, qᵗ=5e-3, u=(x, y, z) -> 5 + sin(2π * x / 800), w=0)
         Oceananigans.TimeSteppers.update_state!(model; compute_tendencies=false)
         fields = Oceananigans.fields(model)
-        fu = model.forcing.ρu.forcing.forcing
+        fu = inner(model.forcing.ρu)
         @test fu(1, 1, 24, grid, model.clock, fields) ≈ -(1 / 60) * (fields.u[1, 1, 24] - 5)
         @test fu(1, 1, 1, grid, model.clock, fields) == 0
-        fq = model.forcing.ρqᵉ.forcing.forcing
+        fq = inner(model.forcing.ρqᵉ)
         @test fq(1, 1, 24, grid, model.clock, fields) ≈ -(5e-3 - 1e-3) / 3600
         @test fq(1, 1, 23, grid, model.clock, fields) ≈ -(5e-3 - 1e-3) / 3600
         @test fq(1, 1, 22, grid, model.clock, fields) == 0
-        fs = model.forcing.ρs.forcing.forcing
+        fs = inner(model.forcing.ρs)
         @test fs(1, 1, 24, grid, model.clock, fields) < 0        # T = 290 relaxed toward 280
         @test fs(1, 1, 22, grid, model.clock, fields) == 0
 
@@ -306,8 +320,11 @@ end
         end
         ΔT = interior(model2.temperature) .- T₀
         Δq = interior(model2.microphysical_fields.qᵛ) .- q₀
-        @test all(isapprox.(ΔT[:, :, 23:24], -(290 - 280) / 3600 * 50; rtol=2e-2))
-        @test all(isapprox.(Δq[:, :, 23:24], -(5e-3 - 1e-3) / 3600 * 50; rtol=2e-2))
+        # exponential relaxation of the *actual* initial state toward the targets
+        expected_ΔT = @. -(T₀[:, :, 23:24] - 280) * (1 - exp(-50 / 3600))
+        expected_Δq = @. -(q₀[:, :, 23:24] - 1e-3) * (1 - exp(-50 / 3600))
+        @test all(isapprox.(ΔT[:, :, 23:24], expected_ΔT; rtol=5e-3))
+        @test all(isapprox.(Δq[:, :, 23:24], expected_Δq; rtol=5e-3))
         @test all(abs.(ΔT[:, :, 1:22]) .< 1e-8)
     end
 end
@@ -351,7 +368,7 @@ end
     Oceananigans.TimeSteppers.update_state!(model)
     F = interior(radiation.flux); H = interior(radiation.flux_divergence)
     @test all(isfinite, F) && all(isfinite, H)
-    @test F[1, 1, end] ≈ 113 + 22 * exp(-sum(interior(reference_state.density) .* max.(interior(model.microphysical_fields.qᶜˡ), 0) .* (3000 / 24) .* 85)[1, 1, 1]) atol=1e-6 skip=true
+    @test F[1, 1, 1] ≈ 22 + 113 * exp(-85 * sum(interior(reference_state.density) .* max.(interior(model.microphysical_fields.qˡ, 1, 1, :), 0) .* (3000 / 24)))
     @test any(H .< 0)                                  # cloud-top cooling
     @test radiation.schedule isa IterationInterval
     # radiation updates on the schedule after iteration 0
@@ -373,5 +390,19 @@ if HAVE_COVERT
         run!(case.simulation)
         @test all(f -> all(isfinite, interior(f)), values(Oceananigans.prognostic_fields(case.model)))
         @test_throws ArgumentError lasso_ena_simulation(COVERT_DIR; preset=:lasso_ena_official)
+        # preset fidelity: fixed SAM time step and namelist translation frame
+        @test case.config.Δt_initial == 0.5 && case.config.max_Δt == 0.5
+        @test case.config.translation_velocity_u == 5.0 && case.config.translation_velocity_v == -8.0
+        # provenance round-trips through TOML
+        path = joinpath(mktempdir(), "provenance.toml")
+        write_provenance(path, case; extra=(; note="test", tuple=(1, 2)))
+        record = TOML.parsefile(path)
+        @test record["preset"] == "covert_public_bin"
+        @test record["config"]["microphysics"] == "one_moment"
+        @test haskey(record["inputs"], "snd_sha256") && haskey(record["inputs"], "prm_sha256")
+        @test record["software"]["Breeze_source"] isa String
+        @test record["extra"]["tuple"] == [1, 2]
     end
 end
+
+end # BreezyLASSO

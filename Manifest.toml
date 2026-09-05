@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "ec20e0ead274254336d1d4aae077e9a8c9c60c4d"
+project_hash = "d40622a454dad3d00005e3feff7cbab62c8dd12a"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -160,7 +160,7 @@ version = "0.10.0"
     Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 
 [[deps.BreezyLASSO]]
-deps = ["Adapt", "Breeze", "CUDA", "CairoMakie", "ClimaComms", "CloudMicrophysics", "Dates", "JLD2", "KernelAbstractions", "NCDatasets", "Oceananigans", "Printf", "RRTMGP", "Random", "SHA", "Statistics"]
+deps = ["Adapt", "Breeze", "CUDA", "CairoMakie", "ClimaComms", "CloudMicrophysics", "Dates", "JLD2", "KernelAbstractions", "NCDatasets", "Oceananigans", "Printf", "RRTMGP", "Random", "SHA", "Statistics", "TOML"]
 path = "."
 uuid = "6c1c1c8e-9c4d-4f2b-8f5e-2a7d0a3b1e11"
 version = "0.1.0"

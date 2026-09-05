@@ -178,3 +178,20 @@ function SoundingTargetProfiles(grid, soundings::Vector{<:SAMSounding}, z_center
     q_columns = [column(r, r -> r.q) for r in soundings]
     return (; times, T = profile_time_series(grid, times, T_columns), q = profile_time_series(grid, times, q_columns))
 end
+
+"""
+    shifted_profile_time_series(fts, shift)
+
+A copy of the profile time series `fts` with the constant `shift` subtracted (used to move
+wind profiles into SAM's translating frame).
+"""
+function shifted_profile_time_series(fts, shift)
+    grid = fts.grid
+    FT = eltype(grid)
+    out = FieldTimeSeries{Nothing, Nothing, Center}(grid, fts.times)
+    for n in eachindex(fts.times)
+        set!(out[n], fts[n])
+        parent(out[n]) .-= FT(shift)
+    end
+    return out
+end

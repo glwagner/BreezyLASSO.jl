@@ -51,13 +51,14 @@ struct PrescribedStressUpdater{X, Y, U, V, T, FT}
     times :: T
     kinematic_stress :: Vector{FT}
     surface_density :: FT
+    frame_velocity :: Tuple{FT, FT}   # SAM namelist (ug, vg): the surface wind is ū + ug
 end
 
 function (updater::PrescribedStressUpdater)(simulation)
     t = simulation.model.clock.time
     τ₀ = interpolate_time_series(updater.times, updater.kinematic_stress, t)
-    ū = mean(interior(updater.u, :, :, 1))
-    v̄ = mean(interior(updater.v, :, :, 1))
+    ū = lowest_level_mean(updater.u) + updater.frame_velocity[1]
+    v̄ = lowest_level_mean(updater.v) + updater.frame_velocity[2]
     U = max(1, sqrt(ū^2 + v̄^2))
     ρ₀ = updater.surface_density
     set!(updater.τˣ, - ρ₀ * τ₀ * ū / U)
@@ -80,7 +81,8 @@ function prescribed_surface_flux_boundary_conditions(grid, sfc::SAMSurfaceForcin
                                                      thermodynamic_constants,
                                                      surface_density,
                                                      moisture_name,
-                                                     temperature_neutral_evaporation = true)
+                                                     temperature_neutral_evaporation = true,
+                                                     frame_velocity = (0, 0))
     FT = eltype(grid)
     constants = thermodynamic_constants
     ℒ = constants.liquid.reference_latent_heat
@@ -117,8 +119,16 @@ function prescribed_surface_flux_boundary_conditions(grid, sfc::SAMSurfaceForcin
              ρv = FieldBoundaryConditions(bottom=ρv_bc),
              ρs = FieldBoundaryConditions(bottom=ρs_bc))
     bcs = merge(bcs, NamedTuple{(moisture_density_name,)}((FieldBoundaryConditions(bottom=ρq_bc),)))
-    stress = (; τˣ, τʸ, times, kinematic_stress = FT.(sfc.kinematic_stress), surface_density = ρ₀)
+    stress = (; τˣ, τʸ, times, kinematic_stress = FT.(sfc.kinematic_stress), surface_density = ρ₀,
+                frame_velocity = (FT(frame_velocity[1]), FT(frame_velocity[2])))
     return bcs, stress
+end
+
+# Horizontal mean of the lowest level as a device-side reduction (`sum` over a GPU array
+# view dispatches to a kernel; `Statistics.mean` on the view would fall back to scalar indexing).
+function lowest_level_mean(field)
+    level = interior(field, :, :, 1)
+    return sum(level) / length(level)
 end
 
 """
@@ -129,7 +139,7 @@ Build the [`PrescribedStressUpdater`](@ref) for the `stress` record returned by
 """
 prescribed_stress_updater(stress, velocities) =
     PrescribedStressUpdater(stress.τˣ, stress.τʸ, velocities.u, velocities.v, stress.times,
-                            stress.kinematic_stress, stress.surface_density)
+                            stress.kinematic_stress, stress.surface_density, stress.frame_velocity)
 
 #####
 ##### Bulk fluxes from SST (LASSO flxsst / SFC_FLX_FXD = .false.)
@@ -140,9 +150,13 @@ prescribed_stress_updater(stress, velocities) =
                                           roughness_length=1.5e-4, gustiness=0.1)
 
 Bottom boundary conditions computed online from the shared `surface_temperature` field
-with Breeze's wind- and stability-dependent `PolynomialCoefficient` (Large & Yeager 2009
-neutral polynomials, the same law as SAM's `oceflx.f90`, with Li et al. 2010 stability
-corrections instead of SAM's iterated Monin-Obukhov solution).
+with Breeze's wind- and stability-dependent `PolynomialCoefficient`. **Approximation of
+SAM's `oceflx.f90`, not the same law:** only the neutral drag polynomial coincides
+(Large & Yeager / Large & Pond `cdn = 0.0027/U + 0.000142 + 0.0000764 U`); SAM uses
+separate neutral Stanton/Dalton numbers (`0.0327√cdn` unstable, `0.0180√cdn` stable,
+`0.0346√cdn`), two Monin-Obukhov iterations, and a 1 m s⁻¹ minimum wind, whereas Breeze
+uses its own scalar polynomials, the Li et al. (2010) non-iterative stability mapping,
+and `gustiness`. Exact fidelity needs a SAM-oceflx boundary implementation.
 """
 function bulk_surface_flux_boundary_conditions(grid, surface_temperature; moisture_name,
                                                roughness_length = 1.5e-4, gustiness = 0.1)

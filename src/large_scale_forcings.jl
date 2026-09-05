@@ -351,16 +351,18 @@ function AtmosphereModels.materialize_atmosphere_model_forcing(f::SAMSponge,
     grid = field.grid
     p = f.parameters
     z_centers = Array(znodes(grid, Center()))
+    center_rates = sam_sponge_rates(z_centers, z_centers; p.damping_depth_fraction, p.minimum_timescale, p.maximum_timescale)
     if name === :w
-        z_query = Array(znodes(grid, Face()))
+        # damping.f90 applies the cell-k rate τ(z(k)) to w(i, j, k), the face below center k;
+        # the top face (w = 0) repeats the top cell's rate.
         rate = Field{Nothing, Nothing, Face}(grid)
+        rates = vcat(center_rates, center_rates[end])
         averaged_field = nothing
     else
-        z_query = z_centers
         rate = Field{Nothing, Nothing, Center}(grid)
+        rates = center_rates
         averaged_field = Field(Average(context.specific_fields[name], dims=(1, 2)))
     end
-    rates = sam_sponge_rates(z_centers, z_query; p.damping_depth_fraction, p.minimum_timescale, p.maximum_timescale)
     set!(rate, reshape(rates, 1, 1, length(rates)))
     return SAMSponge(Val(name), rate, averaged_field, nothing)
 end

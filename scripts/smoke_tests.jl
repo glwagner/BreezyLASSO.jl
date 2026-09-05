@@ -4,7 +4,7 @@ using BreezyLASSO, Breeze, Oceananigans, Oceananigans.Units, CUDA, Printf, Stati
 
 arch = length(ARGS) ≥ 1 && lowercase(ARGS[1]) == "gpu" ? GPU() : CPU()
 data = joinpath(@__DIR__, "..", "data", "covert2022_bin")
-small = (; Nx=32, Ny=32, Lx=1120, Ly=1120, z_faces=lasso_ena_vertical_faces(), FT=Float32, write_output=false, progress_interval=5minutes)
+small = (; Nx=32, Ny=32, Lx=1120, Ly=1120, z_faces=lasso_ena_vertical_faces(), FT=Float32, write_output=false, progress_interval=5minutes, max_Δt=10.0)
 
 finite(model) = all(f -> all(isfinite, Array(interior(f))), values(Oceananigans.prognostic_fields(model)))
 
