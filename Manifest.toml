@@ -142,8 +142,8 @@ version = "1.21.7+0"
 
 [[deps.Breeze]]
 deps = ["Adapt", "Artifacts", "Dates", "DocStringExtensions", "GPUArraysCore", "InteractiveUtils", "JLD2", "KernelAbstractions", "LazyArtifacts", "Oceananigans", "OffsetArrays", "Printf", "SpecialFunctions", "Statistics"]
-git-tree-sha1 = "dd8b0a09a84289ac3c6f5be153fa3e7a54536fd6"
-repo-rev = "0f4ffac"
+git-tree-sha1 = "e5c6636fc32c35bf291c82b88810cc38a13d3377"
+repo-rev = "5fc404c"
 repo-url = "https://github.com/NumericalEarth/Breeze.jl"
 uuid = "660aa2fb-d4c8-4359-a52c-9c057bc511da"
 version = "0.10.0"
@@ -315,9 +315,9 @@ weakdeps = ["CUDA", "MPI"]
 
 [[deps.ClimaParams]]
 deps = ["Dates", "TOML"]
-git-tree-sha1 = "96a75f859807dd1919cbe7e9e66db3d7284bee14"
+git-tree-sha1 = "679d4f2530f4a7444015d0b41dd0dd6abbf3b812"
 uuid = "5c42b081-d73a-476f-9059-fd94b934656c"
-version = "1.1.7"
+version = "1.1.9"
 
 [[deps.CloudMicrophysics]]
 deps = ["ClimaParams", "DocStringExtensions", "FastGaussQuadrature", "ForwardDiff", "InteractiveUtils", "LazyArtifacts", "LogExpFunctions", "RootSolvers", "SpecialFunctions", "StaticArrays", "Thermodynamics", "UnrolledUtilities"]
@@ -1450,7 +1450,9 @@ version = "0.5.5"
 
 [[deps.Oceananigans]]
 deps = ["Adapt", "BFloat16s", "Crayons", "CubedSphere", "Dates", "Distances", "DocStringExtensions", "FFTW", "GPUArraysCore", "Glob", "InteractiveUtils", "JLD2", "KernelAbstractions", "Krylov", "LinearAlgebra", "Logging", "MPI", "MuladdMacro", "OffsetArrays", "OrderedCollections", "Pkg", "Printf", "ReactantCore", "Rotations", "SeawaterPolynomials", "SparseArrays", "StaticArrays", "Statistics", "StructArrays"]
-git-tree-sha1 = "700ebaad8c8882b034a8eac2df6271415cb8f4e2"
+git-tree-sha1 = "97f8346e2c574c2bca9a37b4cb031f3f92ba678e"
+repo-rev = "67a2204"
+repo-url = "https://github.com/CliMA/Oceananigans.jl"
 uuid = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
 version = "0.111.0"
 
