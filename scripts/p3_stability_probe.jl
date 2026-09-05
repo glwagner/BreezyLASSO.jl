@@ -9,7 +9,9 @@ arch = lowercase(ARGS[1]) == "gpu" ? GPU() : CPU()
 FT = ARGS[2] == "Float64" ? Float64 : Float32
 max_Δt = parse(Float64, ARGS[3])
 minutes = length(ARGS) ≥ 4 ? parse(Float64, ARGS[4]) : 45.0
-scheme = length(ARGS) ≥ 5 ? Symbol(ARGS[5]) : :p3_n75
+scheme_arg = length(ARGS) ≥ 5 ? ARGS[5] : "p3_n75"
+# "p3_aer2" runs with the SBM diagCCN projection; "p3_aer2_noproj" without it
+scheme = Symbol(replace(scheme_arg, "_noproj" => ""))
 off = length(ARGS) ≥ 6 ? split(ARGS[6], ",") : String[]
 data = joinpath(@__DIR__, "..", "data", "covert2022_bin")
 
@@ -23,7 +25,8 @@ switches = Dict{Symbol, Any}()
 "radiation" ∈ off && (switches[:radiation] = nothing)
 "surface" ∈ off && (switches[:surface] = nothing)
 "closure" ∈ off && (switches[:closure] = nothing)
-println("off switches: ", off)
+scheme === :p3_aer2 && !endswith(scheme_arg, "_noproj") && (switches[:aerosol_replenishment] = :diagnostic_ccn)
+println("off switches: ", off, "  scheme: ", scheme_arg)
 
 case = lasso_ena_simulation(data; preset=:covert_public_bin, arch, FT, Nx=32, Ny=32, Lx=1120, Ly=1120,
                             z_faces=lasso_ena_vertical_faces(), microphysics=scheme, stop_time=minutes*60,
@@ -56,15 +59,16 @@ function diagnostics(sim)
     accumulated_vapor[] += E * grid_.Lx * grid_.Ly * Δt_diag
     budget = water_mass(m) - water₀[] - accumulated_vapor[] + accumulated_rain[]
     qʳ_bottom = maximum(Array(interior(μ.qʳ, :, :, 1)))
-    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e (k=1 max %.2e, min ρqʳ %.2e) | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | water budget residual %.3e kg (of %.3e)\n",
+    aerosol = haskey(μ, :ρnᵃ) ? @sprintf(" | ρnᶜˡ [%.2e, %.2e] ρnᵃ [%.2e, %.2e]", minimum(μ.ρnᶜˡ), maximum(μ.ρnᶜˡ), minimum(μ.ρnᵃ), maximum(μ.ρnᵃ)) : ""
+    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e (k=1 max %.2e, min ρqʳ %.2e) | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | water budget residual %.3e kg (of %.3e)%s\n",
             m.clock.time / 60, sim.Δt, maximum(μ.qʳ), qʳ_bottom, minimum(μ.ρqʳ), minimum(μ.ρnʳ), maximum(μ.ρnʳ), maximum(μ.qᶜˡ),
-            maximum(abs, m.velocities.w), minimum(m.temperature), maximum(m.temperature), budget, water₀[])
+            maximum(abs, m.velocities.w), minimum(m.temperature), maximum(m.temperature), budget, water₀[], aerosol)
     bad = first_bad(m)
     if !isnothing(bad)
         println("FIRST NONFINITE PROGNOSTIC: ", bad, " at t = ", m.clock.time, " iteration ", m.clock.iteration)
         error("non-finite state")
     end
 end
-add_callback!(case.simulation, diagnostics, TimeInterval(1minute))
+add_callback!(case.simulation, diagnostics, TimeInterval(30))
 run!(case.simulation)
 println("PROBE FINITE: ", string(FT), " max_Δt=", max_Δt, " scheme=", scheme)
