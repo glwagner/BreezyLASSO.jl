@@ -8,7 +8,7 @@
 #SBATCH --output=output/slurm-%j.out
 # Usage: sbatch scripts/submit_gpu.sbatch <run_case.jl arguments...>
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 mkdir -p output
 export JULIA_CUDA_USE_COMPAT=false
 julia --startup-file=no --project=. scripts/run_case.jl --arch gpu "$@"
