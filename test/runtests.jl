@@ -456,6 +456,12 @@ end
     schemes = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ)
     @test all(is_bounded, (schemes.ρqᶜˡ, schemes.ρqʳ, schemes.ρqⁱ, schemes.ρqᶠ, schemes.ρqʷⁱ))
     @test all(!is_bounded, (schemes.ρnᶜˡ, schemes.ρnʳ, schemes.ρnⁱ, schemes.ρbᶠ, schemes.ρnᵃ))
+    # positivity-only limiter for the moments: lower bound 0, no upper bound
+    positive = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ; positive_moments=true)
+    @test all(is_bounded, (positive.ρnᶜˡ, positive.ρnʳ, positive.ρnⁱ, positive.ρbᶠ, positive.ρnᵃ))
+    @test positive.ρnʳ.bounds.minimum_value == 0 && isinf(positive.ρnʳ.bounds.maximum_value)
+    @test positive.ρqʳ.bounds.maximum_value == 1
+    @test !is_bounded(positive.ρs)
 end
 
 @testset "Sedimenting rain carries its enthalpy" begin

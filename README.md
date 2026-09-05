@@ -96,6 +96,26 @@ weights become NaN. The fix caps the ratio at `sqrt(floatmax(FT)) / 8` (finite r
 unchanged) and lives on the Oceananigans branch `glw/weno-z-float32-overflow` (commit
 `877618e`, with a regression test on the failing stencil), which this package pins.
 
+### Rain-number runaway in the 10-m surface layer of the Covert grid (P3)
+
+On the 192-level Covert grid (Δz = 10 m below 1.5 km) both P3 production members went
+non-finite after 13–21 minutes, while the one-moment control completed its 6 hours and
+the same P3 configuration survives on the 260-level LASSO grid (Δz = 25 m). The 32²
+probes reproduce it on the Covert grid at Δt = 0.5 **and** 0.25 s: the rain number in the
+lowest cell grows by a factor 100 every 30 s of simulated time (a dt-independent rate,
+so a rate term, not a time-stepping instability) while its mass stays ~5×10⁻⁷ kg kg⁻¹.
+`scripts/p3_rain_number_probe.jl` shows the chain: cells just above the surface carry rain
+mass but no rain number, so P3's slope clamp diagnoses 2-mm drops there and lets the mass
+fall at 9.3 m s⁻¹ and the number at 5.4 m s⁻¹ — a sedimentation Courant number of 0.47 at
+10 m, above the 5/18 up to which the bounds-preserving limiter guarantees its bounds. In the
+surface cell the number spike makes P3 diagnose micron drops whose number fall speed
+(0.006 m s⁻¹) no longer removes it, the plain (unlimited) WENO number advection plus the
+negative-number clamp then grow the spike by ~8 % per step, and P3's DSD-consistency
+relaxation (−n/10 s) cannot hold it. The remedy under test is a positivity-only limiter for
+the number and volume moments (`moment_advection = :positive`, `WENO(bounds = (0, ∞))`,
+recorded in provenance); the production P3 members otherwise run on the 260-level LASSO
+grid, where the sedimentation Courant number stays inside the limiter's guarantee.
+
 ### Breeze fix required for P3-aer2
 
 The prognostic-aerosol P3 configuration produced `NaN` in `ρnᶜˡ` after 8–9 steps in every

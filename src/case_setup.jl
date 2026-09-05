@@ -114,15 +114,19 @@ reconstruction with its own cell's factor, which restores conservation; that pat
 validated in an isolated environment. `bounded_condensates = false` (plain WENO for the
 condensate masses) is retained as a diagnostic sensitivity only.
 """
-function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true)
+function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=false)
     weno = WENO(; order)
     bounded = WENO(; order, bounds=(0, 1))
+    # Number and volume moments are not bounded by one, so their limiter only enforces
+    # positivity (an infinite upper bound disables the maximum side of the limiter).
+    moments = positive_moments ? WENO(; order, bounds=(0.0, Inf)) : weno
     moisture = Symbol("ρ", moisture_name)
     names = (:ρs, moisture, Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
     schemes = map(names) do name
         s = string(name)
+        name === :ρs ? weno :
         name === moisture ? bounded :
-        (occursin("ρq", s) && bounded_condensates) ? bounded : weno
+        occursin("ρq", s) ? (bounded_condensates ? bounded : weno) : moments
     end
     return NamedTuple{names}(schemes)
 end
@@ -202,6 +206,7 @@ function build_case(data_dir;
                               aerosol_replenishment = nothing,
                               sedimentation_enthalpy = true,
                               bounded_condensate_advection = nothing,
+                              moment_advection = :plain,
                               label = "unlabeled",
                               output_dir = "output",
                               output_prefix = "lasso_ena",
@@ -268,8 +273,10 @@ function build_case(data_dir;
 
     momentum_advection = WENO(order=advection_order)
     bounded_condensate_advection = something(bounded_condensate_advection, true)
+    moment_advection ∈ (:plain, :positive) || throw(ArgumentError("moment_advection must be :plain or :positive, got $moment_advection"))
     scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name;
-                                                bounded_condensates=bounded_condensate_advection)
+                                                bounded_condensates=bounded_condensate_advection,
+                                                positive_moments=(moment_advection === :positive))
 
     #####
     ##### Large-scale forcing
@@ -495,6 +502,7 @@ function build_case(data_dir;
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
                 aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy, bounded_condensate_advection,
+                moment_advection=string(moment_advection),
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
 
