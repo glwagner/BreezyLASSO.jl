@@ -95,21 +95,26 @@ end
 is_p3(microphysics) = microphysics isa Breeze.Microphysics.PredictedParticleProperties.PredictedParticlePropertiesMicrophysics
 
 """
-    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=!is_p3(microphysics))
+    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true)
 
-Advection scheme per prognostic scalar. The moisture prognostic (vapor / equilibrium
-moisture) uses bounds-preserving WENO; energy, number and volume moments use plain WENO.
-P3 condensate masses use plain WENO by default: Oceananigans' bounds-preserving WENO limits
-only the upwind reconstruction of the cell it is evaluated in, so when its limiter fires the
-two cells sharing a face see different fluxes and mass is not conserved. With P3's large
-sedimentation velocities that fired persistently in the sharp rain layer above the surface,
-piling phantom rain into the surface cell (and, through the negative-moisture repair,
-converting vapor to rain) until the run blew up. Plain WENO is conservative; the small
-negative undershoots it can produce are repaired by P3's `SpeciesBorrowing`. The one-moment
-scheme has no such repair (it only relaxes negative rain over 10 s), so its rain keeps the
-bounded scheme. `bounded_condensates` overrides the choice.
+Advection scheme per prognostic scalar, following Breeze's `examples/rico.jl`: the static
+energy uses plain WENO; every microphysical *water-mass* tracer (the vapor / equilibrium
+moisture and all condensate masses `ρq*`) uses bounds-preserving WENO with bounds `(0, 1)`;
+dimensional number and volume moments (`ρn*`, `ρb*`), whose magnitudes are not bounded by
+one, use plain WENO (P3's `SpeciesBorrowing` clamps their negative undershoots).
+
+Known issue (documented, tracked): the bounds-preserving WENO of the pinned Oceananigans
+limits only the upwind reconstruction of the evaluating cell, so the two cells sharing a
+face can apply different fluxes when its limiter fires and mass is not conserved there. With
+P3's fast sedimentation this piled phantom rain into the surface cell of the 45-minute
+GPU probes (surface `qʳ` reached 9.5 g kg⁻¹, versus < 0.03 g kg⁻¹ with plain WENO), and the
+forcing-free rain-shaft budget in `scripts/mass_budget_probe.jl` records the residual.
+Oceananigans `main` stores the limiter as a cell field and rescales every face
+reconstruction with its own cell's factor, which restores conservation; that path is being
+validated in an isolated environment. `bounded_condensates = false` (plain WENO for the
+condensate masses) is retained as a diagnostic sensitivity only.
 """
-function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=!is_p3(microphysics))
+function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true)
     weno = WENO(; order)
     bounded = WENO(; order, bounds=(0, 1))
     moisture = Symbol("ρ", moisture_name)
@@ -262,7 +267,7 @@ function build_case(data_dir;
     moisture_name = Breeze.AtmosphereModels.moisture_specific_name(microphysics_model)
 
     momentum_advection = WENO(order=advection_order)
-    bounded_condensate_advection = something(bounded_condensate_advection, !is_p3(microphysics_model))
+    bounded_condensate_advection = something(bounded_condensate_advection, true)
     scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name;
                                                 bounded_condensates=bounded_condensate_advection)
 

@@ -54,12 +54,29 @@ column now leaves T unchanged to 5 mK (test), versus ±1.7 K without it. It is o
 
 A second P3 runaway (rain piling into the surface cell, reaching 10 g kg⁻¹ with vapor
 converted to rain by the negative-moisture repair) traced to Oceananigans'
-`WENO(bounds=(0, 1))`: it limits only the upwind reconstruction of the evaluating cell, so
-the two cells sharing a face apply different fluxes whenever the limiter is active. P3's fast
-sedimentation across the sharp rain gradient above the surface kept it active. Condensate
-masses therefore use plain (conservative) WENO with P3's `SpeciesBorrowing` repairing
-undershoots; vapor keeps the bounded scheme (`bounded_condensate_advection = false`,
-recorded).
+`WENO(bounds=(0, 1))` as released in 0.111: it limits only the upwind reconstruction of the
+evaluating cell, so the two cells sharing a face apply different fluxes whenever the limiter
+is active, and P3's fast sedimentation across the sharp rain gradient above the surface kept
+it active. Evidence retained: in otherwise identical 45-minute P3-N75 GPU probes the surface
+cell reached qʳ = 9.5 g kg⁻¹ with the bounded scheme versus < 0.03 g kg⁻¹ with plain WENO,
+and the forcing-free rain-shaft budget `scripts/mass_budget_probe.jl` (8×8×60 column, 2 min)
+gives a residual of −0.134 % of the initial rain for bounded WENO versus −0.048 % for plain
+WENO (the plain residual is the explicit-Euler outflow estimate's own error).
+
+The production configuration nevertheless follows Breeze's `examples/rico.jl`: every
+microphysical water-mass tracer (vapor and all condensate masses, P3 included) is advected
+with bounds-preserving WENO, the static energy and the number/volume moments with plain WENO
+(`scalar_advection_schemes`; `bounded_condensate_advection = false` is a diagnostic
+sensitivity only, recorded in provenance). The limiter path itself is the thing to fix:
+Oceananigans `main` (post-0.111, commit `67a2204`) stores the limiter factor per cell and
+rescales every face reconstruction with its own cell's factor, which makes the flux
+single-valued at shared faces. It is exercised in an isolated environment (branch `ocmain`:
+`[sources]` overrides to Oceananigans `main` and the Breeze branch `glw/lasso-ena-ocmain`,
+which follows Oceananigans' renamed `update_advection!` contract and refreshes each scalar's
+limiter on the specific field Breeze advects). Result of the same rain-shaft budget there:
+bounded WENO −0.046 % versus plain −0.048 %, i.e. the bounded residual collapses onto the
+outflow-estimate error, and the full test suite passes. The production pin changes only once
+the P3 GPU smokes pass in that environment as well.
 
 ### Breeze fix required for P3-aer2
 
@@ -113,7 +130,7 @@ mode, translation frame, aerosol chemistry, and any overrides).
 - `:covert_public_bin` — exactly the runnable configuration of the public bin-paper
   repository namelist: `256x256x192` at 35 m (8.96 km), `day0 = 199.25`, `nstop × dt = 6 h`,
   prescribed fluxes, `rad_simple` longwave only, no wind nudging, `doupperbound`, `dodamping`.
-  The published Covert et al. (2022) run (864² × 192 at 35 m, 30.24 km, 06–15 UTC) is a
+- All water-mass tracers (vapor and every condensate mass, P3 included) use bounds-preserving WENO; number and volume moments and static energy use plain WENO (see the limiter note above).
   different, not directly runnable target. The 192-level vertical grid is a labelled
   reconstruction (the repository does not ship its `grd`).
 - `:lasso_ena_official` — needs `snd`, `lsf`, `sfc`, `prm`, `grd` from the `samin` bundle;
