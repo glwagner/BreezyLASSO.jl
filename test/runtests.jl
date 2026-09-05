@@ -264,7 +264,26 @@ end
             # ... whereas the verbatim rate or a cᵖᵐ-only mapping would not
             𝒰₂ = StaticEnergyState{Float64}(s + mixture_heat_capacity(q, constants) * tls_value * Δt, q₁, z, p)
             @test !isapprox((temperature(𝒰₂, constants) - T) / Δt, tls_value; rtol=2e-3)
-            # the kernel reproduces the same rates in a P3 model with this state
+            # the kernels reproduce the same rates in a one-moment model with this cloudy state
+            if label == "cloudy"
+                ext = Base.get_extension(Breeze, :BreezeCloudMicrophysicsExt)
+                one_moment = ext.OneMomentCloudMicrophysics(Float64; cloud_formation=SaturationAdjustment(Float64; equilibrium=WarmPhaseEquilibrium()))
+                tls_f = profile_time_series(grid, times, [fill(tls_value, 24), fill(tls_value, 24)])
+                qls_f = profile_time_series(grid, times, [fill(R, 24), fill(R, 24)])
+                thermo_1m = large_scale_thermodynamic_forcings(tls_f, qls_f; microphysics=one_moment, thermodynamic_constants=constants, moisture_name=:qᵉ)
+                model_1m = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=one_moment, thermodynamic_constants=constants,
+                                           forcing=(; s=thermo_1m.s, qᵉ=thermo_1m.qᵉ))
+                set!(model_1m; θ=290.0, qᵗ=12e-3)             # saturated at 290 K near the surface → cloud
+                Oceananigans.TimeSteppers.update_state!(model_1m)
+                f1 = Oceananigans.fields(model_1m)
+                k1 = findfirst(k -> f1.qˡ[1, 1, k] > 1e-5, 1:grid.Nz)
+                @test !isnothing(k1)
+                fs1 = inner(model_1m.forcing.ρs); fq1 = inner(model_1m.forcing.ρqᵉ)
+                qᵛ1 = f1.qᵛ[1, 1, k1]; qˡ1 = f1.qˡ[1, 1, k1]; T1 = f1.T[1, 1, k1]; qᵈ1 = 1 - qᵛ1 - qˡ1
+                @test fq1(1, 1, k1, grid, model_1m.clock, f1) ≈ qᵈ1^2 / (1 - qˡ1) * R
+                @test fs1(1, 1, k1, grid, model_1m.clock, f1) ≈ mixture_heat_capacity(MoistureMassFractions(qᵛ1, qˡ1, 0.0), constants) * tls_value + (1850 - 1005) * T1 * qᵈ1^2 / (1 - qˡ1) * R
+            end
+            # ... and in a P3 model with this state
             if label == "cloudy"
                 using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
                 p3 = P3Microphysics(Float64; cloud=CloudDroplets(Float64; number_concentration=75e6))

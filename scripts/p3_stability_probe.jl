@@ -25,6 +25,7 @@ switches = Dict{Symbol, Any}()
 "radiation" ∈ off && (switches[:radiation] = nothing)
 "surface" ∈ off && (switches[:surface] = nothing)
 "closure" ∈ off && (switches[:closure] = nothing)
+"enthalpy" ∈ off && (switches[:sedimentation_enthalpy] = false)
 scheme === :p3_aer2 && !endswith(scheme_arg, "_noproj") && (switches[:aerosol_replenishment] = :diagnostic_ccn)
 println("off switches: ", off, "  scheme: ", scheme_arg)
 
@@ -60,7 +61,7 @@ function diagnostics(sim)
     budget = water_mass(m) - water₀[] - accumulated_vapor[] + accumulated_rain[]
     qʳ_bottom = maximum(Array(interior(μ.qʳ, :, :, 1)))
     aerosol = haskey(μ, :ρnᵃ) ? @sprintf(" | ρnᶜˡ [%.2e, %.2e] ρnᵃ [%.2e, %.2e]", minimum(μ.ρnᶜˡ), maximum(μ.ρnᶜˡ), minimum(μ.ρnᵃ), maximum(μ.ρnᵃ)) : ""
-    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e (k=1 max %.2e, min ρqʳ %.2e) | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | water budget residual %.3e kg (of %.3e)%s\n",
+    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e (k=1 max %.2e, min ρqʳ %.2e) | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | forced water budget (excludes qls/subsidence/upper relaxation) %.3e kg (of %.3e)%s\n",
             m.clock.time / 60, sim.Δt, maximum(μ.qʳ), qʳ_bottom, minimum(μ.ρqʳ), minimum(μ.ρnʳ), maximum(μ.ρnʳ), maximum(μ.qᶜˡ),
             maximum(abs, m.velocities.w), minimum(m.temperature), maximum(m.temperature), budget, water₀[], aerosol)
     bad = first_bad(m)

@@ -208,15 +208,17 @@ Return `(; s = energy_forcing, <moisture_name> = moisture_forcing)` implementing
 `forcing.f90`, which adds `tls` to the temperature-like variable `t` (SAM: `t = T + gz/cp
 - (Lv/cp) qˡ - (Ls/cp) qⁱ` with constant `cp = 1004`) and `qls` to the vapor.
 
-SAM's vapor is a mixing ratio (per kg dry air) while Breeze carries mass fractions. The
-condensate mass fractions are left untouched by this forcing (Breeze coordinates), so a
-vapor-only source `R = qls` [kg/kg-dry/s] with `qᵛ + qᵈ = 1 - qᶜ` fixed maps exactly to
+SAM's vapor is a mixing ratio (per kg dry air) while Breeze carries mass fractions: SAM
+imposes `drᵛ/dt = qls`. **Approximation:** SAM holds the *dry-basis* condensate ratios fixed
+while the vapor source acts, whereas this forcing leaves Breeze's condensate mass fractions
+untouched; with `qᵛ + qᵈ = 1 - qᶜ` fixed the vapor source maps to
 
     dqᵛ/dt = qᵈ² / (1 - qᶜ) R,   qᶜ = qˡ + qⁱ
 
 (`moisture_basis = :mixing_ratio`, the default; `:mass_fraction` applies `qls` verbatim),
-and only that vapor rate enters the energy cross term. The ~1 % difference from the verbatim
-rate is systematic; see the cloudy Jacobian test in `test/runtests.jl`.
+and only that vapor rate enters the energy cross term. In clear air the two conventions
+coincide; in cloudy cells they differ at O(qᶜ) ≈ 0.1 %. See the Jacobian tests in
+`test/runtests.jl`.
 
 Breeze's prognostic is `s = cᵖᵐ(q) T + gz - ℒˡ qˡ - ℒⁱ qⁱ`, so the tendencies are mapped so
 that the **physical temperature invariant** holds: over a forcing-only step the state
@@ -226,9 +228,10 @@ order in the heat-capacity coupling,
     ds/dt = cᵖᵐ(q) tls + (cᵖᵛ - cᵖᵈ) T dqᵛ/dt
 
 The second term is what keeps the temperature unchanged while vapor with heat capacity
-`cᵖᵛ ≠ cᵖᵈ` replaces dry air; multiplying `tls` by `cᵖᵐ` alone (or by SAM's constant `cp`)
-would change `T` whenever `qls ≠ 0`. The tests in `test/runtests.jl` check the invariant in a
-forcing-only step (clear air) and against Breeze's thermodynamic state in cloudy cells.
+`cᵖᵛ ≠ cᵖᵈ` replaces dry air; multiplying `tls` by `cᵖᵈ` alone (SAM's constant `cp`) would
+change `T` whenever `qls ≠ 0`. The invariants are `dT/dt = tls` and `drᵛ/dt = qls` with
+`dqᵛ/dt` following the mapping above; `test/runtests.jl` checks them in a forcing-only step
+(clear air) and against Breeze's thermodynamic state in cloudy cells.
 """
 function large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants, moisture_name,
                                             moisture_basis=:mixing_ratio)

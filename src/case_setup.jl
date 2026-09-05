@@ -404,6 +404,10 @@ function build_case(data_dir;
     δT = perturbation.amplitude_T
     δq = perturbation.amplitude_q
     column(values) = reshape(values, 1, 1, Nz)
+    # setperturb.f90 adds ±δq to SAM's dry-basis vapor; with moisture_basis = :mixing_ratio the
+    # perturbation is applied to r = q/(1 - q) and converted back, otherwise to q directly.
+    perturbed_moisture(q, ϵ) = moisture_basis === :mixing_ratio ?
+        (r = q / (1 - q) + δq * ϵ; max(0, r / (1 + r))) : max(0, q + δq * ϵ)
 
     u₀ = repeat(column(columns.u .- uᶠ), Nx, Ny, 1)
     v₀ = repeat(column(columns.v .- vᶠ), Nx, Ny, 1)
@@ -413,13 +417,13 @@ function build_case(data_dir;
             # SAM HUJI-SBM `micro_init`: all condensate bins empty, qᵗ all vapor, cloud forms
             # through the scheme's own activation/condensation in the first steps.
             T₀ = column(columns.T_condensate_free) .+ δT .* ϵ
-            qᵛ₀ = max.(0, column(columns.qᵗ) .+ δq .* ϵ)
+            qᵛ₀ = perturbed_moisture.(column(columns.qᵗ), ϵ)
             set!(model; T=T₀, qᵛ=qᵛ₀, u=u₀, v=v₀)
         elseif p3_initialization === :equilibrium
             # Deliberate P3 choice: warm-phase equilibrium partition (identical to the 1M
             # control's first saturation adjustment), with an in-cloud droplet number.
             T₀ = column(columns.T) .+ δT .* ϵ
-            qᵛ₀ = max.(0, column(columns.qᵛ) .+ δq .* ϵ)
+            qᵛ₀ = perturbed_moisture.(column(columns.qᵛ), ϵ)
             qᶜˡ₀ = repeat(column(columns.qᶜˡ), Nx, Ny, 1)
             if !isnothing(microphysics_model.aerosol)
                 isnothing(initial_droplet_number) &&
@@ -435,7 +439,7 @@ function build_case(data_dir;
     else
         Π = columns.T ./ columns.θˡ
         θ₀ = column(columns.θˡ) .+ δT .* ϵ ./ column(Π)
-        qᵗ₀ = max.(0, column(columns.qᵗ) .+ δq .* ϵ)
+        qᵗ₀ = perturbed_moisture.(column(columns.qᵗ), ϵ)
         set!(model; θ=θ₀, qᵗ=qᵗ₀, u=u₀, v=v₀)
     end
 

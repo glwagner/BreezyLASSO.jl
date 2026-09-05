@@ -175,7 +175,9 @@ function SoundingTargetProfiles(grid, soundings::Vector{<:SAMSounding}, z_center
         sam_interpolate_column(x, getter(r), xq; pressure_grid, above=:hold)
     end
     T_columns = [column(r, r -> r.θ) .* Π for r in soundings]
-    convert_q = moisture_basis === :mixing_ratio ? mass_fraction_from_mixing_ratio : identity
+    convert_q = moisture_basis === :mixing_ratio ? mass_fraction_from_mixing_ratio :
+                moisture_basis === :mass_fraction ? identity :
+                throw(ArgumentError("moisture_basis must be :mixing_ratio or :mass_fraction"))
     q_columns = [convert_q.(column(r, r -> r.q)) for r in soundings]
     return (; times, T = profile_time_series(grid, times, T_columns), q = profile_time_series(grid, times, q_columns))
 end

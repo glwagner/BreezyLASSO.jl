@@ -44,8 +44,9 @@ content (Breeze PR 959 describes the same defect); rain piling into the surface 
 by ℒ Δqʳ/cᵖ and the P3-N75 GPU smoke test ran away to T > 320 K within minutes of drizzle
 onset (isolated with `scripts/p3_runaway_probe.jl`: hot cell at k = 1, Δs ≈ 0 while qʳ jumped).
 `SedimentationEnthalpyForcing` adds, for every sedimenting prognostic condensate, the
-divergence of `h · [Φ(w + w_fall, q) − Φ(w, q)]` with the tracer's own bounds-preserving WENO
-flux and `h = ∂s/∂q|_T = (cˣ − cᵖᵈ) T − ℒˣ`; a rain shaft crossing an isothermal saturated
+divergence of `h · [Φ(w + w_fall, q) − Φ(w, q)]` with the tracer's own advection scheme
+(mirroring the bounds-preserving limiter when that scheme is used), each flux carrying the
+content `h = ∂s/∂q|_T = (cˣ − cᵖᵈ) T − ℒˣ` of its donor cell; a rain shaft crossing an isothermal saturated
 column now leaves T unchanged to 5 mK (test), versus ±1.7 K without it. It is on by default
 (`sedimentation_enthalpy = true`) and recorded in provenance; PR 959 will supersede it.
 
