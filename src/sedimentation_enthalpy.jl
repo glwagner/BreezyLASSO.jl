@@ -29,8 +29,18 @@
 
 using Adapt: Adapt, adapt
 using Oceananigans.Advection: BoundsPreservingWENO, _biased_interpolate_zᵃᵃᶠ, upwind_biased_product,
-                              LeftBias, RightBias, _ω̂₁, _ω̂ₙ, _ε₂, _advective_tracer_flux_z,
+                              LeftBias, RightBias, _advective_tracer_flux_z,
                               adapt_advection_order, materialize_advection
+
+# Oceananigans ≥ main-2026-09 stores the bounds-preserving limiter as a per-cell field
+# (`BoundsPreservation`); the 0.111 release recomputes one factor per evaluating cell.
+const CELL_LIMITER_OCEANANIGANS = isdefined(Oceananigans.Advection, :BoundsPreservation)
+
+@static if CELL_LIMITER_OCEANANIGANS
+    using Oceananigans.Advection: bounds_preserving_limiter
+else
+    using Oceananigans.Advection: _ω̂₁, _ω̂ₙ, _ε₂
+end
 using Oceananigans.Operators: ℑzᵃᵃᶠ, Azᶜᶜᶠ, V⁻¹ᶜᶜᶜ
 using Oceananigans.Utils: SumOfArrays
 using Oceananigans.Fields: ZeroField
@@ -63,31 +73,62 @@ AtmosphereModels.is_density_tendency_forcing(::SedimentationEnthalpyForcing) = t
 
 # Mass fluxes (area-weighted, ρ-weighted) through the top (+) and bottom (-) faces of cell k,
 # exactly as `bounded_tracer_flux_divergence_z` forms them for the bounds-preserving WENO.
-@inline function face_mass_fluxes(i, j, k, grid, advection::BoundsPreservingWENO, ρ, w, c)
-    c_min = @inbounds advection.bounds[1]
-    c_max = @inbounds advection.bounds[2]
-    c₊ᴸ = _biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, LeftBias,  c)
-    c₊ᴿ = _biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, RightBias, c)
-    c₋ᴸ = _biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, LeftBias,  c)
-    c₋ᴿ = _biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, RightBias, c)
-    FT = eltype(c)
-    ω̂₁ = convert(FT, _ω̂₁)
-    ω̂ₙ = convert(FT, _ω̂ₙ)
-    ε₂ = convert(FT, _ε₂)
-    cᵢⱼ = @inbounds c[i, j, k]
-    p̃ = (cᵢⱼ - ω̂₁ * c₋ᴿ - ω̂ₙ * c₊ᴸ) / (1 - 2ω̂₁)
-    M = max(p̃, c₊ᴸ, c₋ᴿ)
-    m = min(p̃, c₊ᴸ, c₋ᴿ)
-    θ_max = abs((c_max - cᵢⱼ) / (M - cᵢⱼ + ε₂))
-    θ_min = abs((c_min - cᵢⱼ) / (m - cᵢⱼ + ε₂))
-    θ = min(θ_max, θ_min, one(grid))
-    c₊ᴸ = θ * (c₊ᴸ - cᵢⱼ) + cᵢⱼ
-    c₋ᴿ = θ * (c₋ᴿ - cᵢⱼ) + cᵢⱼ
-    w⁺ = @inbounds w[i, j, k+1]
-    w⁻ = @inbounds w[i, j, k]
-    F⁺ = ℑzᵃᵃᶠ(i, j, k+1, grid, ρ) * Azᶜᶜᶠ(i, j, k+1, grid) * upwind_biased_product(w⁺, c₊ᴸ, c₊ᴿ)
-    F⁻ = ℑzᵃᵃᶠ(i, j, k,   grid, ρ) * Azᶜᶜᶠ(i, j, k,   grid) * upwind_biased_product(w⁻, c₋ᴸ, c₋ᴿ)
-    return F⁺, F⁻
+@static if CELL_LIMITER_OCEANANIGANS
+    # Per-cell limiter: every face reconstruction is rescaled with the factor of the cell it
+    # was reconstructed from, so the flux is single-valued at shared faces. The forcing
+    # recomputes θ with the model's own `bounds_preserving_limiter` (its materialized copy of
+    # the scheme carries a separate, unused limiter field); the neighbour factors are mirrored
+    # at the bottom and top as `fill_halo_regions!` does for the model's limiter field.
+    @inline rescale(ĉ, θ, cᵢ) = θ * (ĉ - cᵢ) + cᵢ
+
+    @inline function face_mass_fluxes(i, j, k, grid, advection::BoundsPreservingWENO, ρ, w, c)
+        Nz = size(grid, 3)
+        k₋ = max(k - 1, 1)
+        k₊ = min(k + 1, Nz)
+        θ₋ = bounds_preserving_limiter(i, j, k₋, grid, advection, c)
+        θ₀ = bounds_preserving_limiter(i, j, k,  grid, advection, c)
+        θ₊ = bounds_preserving_limiter(i, j, k₊, grid, advection, c)
+        @inbounds c₋ = c[i, j, k-1]
+        @inbounds c₀ = c[i, j, k]
+        @inbounds c₊ = c[i, j, k+1]
+        c₊ᴸ = rescale(_biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, LeftBias,  c), θ₀, c₀)
+        c₊ᴿ = rescale(_biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, RightBias, c), θ₊, c₊)
+        c₋ᴸ = rescale(_biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, LeftBias,  c), θ₋, c₋)
+        c₋ᴿ = rescale(_biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, RightBias, c), θ₀, c₀)
+        w⁺ = @inbounds w[i, j, k+1]
+        w⁻ = @inbounds w[i, j, k]
+        F⁺ = ℑzᵃᵃᶠ(i, j, k+1, grid, ρ) * Azᶜᶜᶠ(i, j, k+1, grid) * upwind_biased_product(w⁺, c₊ᴸ, c₊ᴿ)
+        F⁻ = ℑzᵃᵃᶠ(i, j, k,   grid, ρ) * Azᶜᶜᶠ(i, j, k,   grid) * upwind_biased_product(w⁻, c₋ᴸ, c₋ᴿ)
+        return F⁺, F⁻
+    end
+else
+    # Release 0.111: one factor per evaluating cell, applied to that cell's own reconstructions.
+    @inline function face_mass_fluxes(i, j, k, grid, advection::BoundsPreservingWENO, ρ, w, c)
+        c_min = @inbounds advection.bounds[1]
+        c_max = @inbounds advection.bounds[2]
+        c₊ᴸ = _biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, LeftBias,  c)
+        c₊ᴿ = _biased_interpolate_zᵃᵃᶠ(i, j, k+1, grid, advection, RightBias, c)
+        c₋ᴸ = _biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, LeftBias,  c)
+        c₋ᴿ = _biased_interpolate_zᵃᵃᶠ(i, j, k,   grid, advection, RightBias, c)
+        FT = eltype(c)
+        ω̂₁ = convert(FT, _ω̂₁)
+        ω̂ₙ = convert(FT, _ω̂ₙ)
+        ε₂ = convert(FT, _ε₂)
+        cᵢⱼ = @inbounds c[i, j, k]
+        p̃ = (cᵢⱼ - ω̂₁ * c₋ᴿ - ω̂ₙ * c₊ᴸ) / (1 - 2ω̂₁)
+        M = max(p̃, c₊ᴸ, c₋ᴿ)
+        m = min(p̃, c₊ᴸ, c₋ᴿ)
+        θ_max = abs((c_max - cᵢⱼ) / (M - cᵢⱼ + ε₂))
+        θ_min = abs((c_min - cᵢⱼ) / (m - cᵢⱼ + ε₂))
+        θ = min(θ_max, θ_min, one(grid))
+        c₊ᴸ = θ * (c₊ᴸ - cᵢⱼ) + cᵢⱼ
+        c₋ᴿ = θ * (c₋ᴿ - cᵢⱼ) + cᵢⱼ
+        w⁺ = @inbounds w[i, j, k+1]
+        w⁻ = @inbounds w[i, j, k]
+        F⁺ = ℑzᵃᵃᶠ(i, j, k+1, grid, ρ) * Azᶜᶜᶠ(i, j, k+1, grid) * upwind_biased_product(w⁺, c₊ᴸ, c₊ᴿ)
+        F⁻ = ℑzᵃᵃᶠ(i, j, k,   grid, ρ) * Azᶜᶜᶠ(i, j, k,   grid) * upwind_biased_product(w⁻, c₋ᴸ, c₋ᴿ)
+        return F⁺, F⁻
+    end
 end
 
 # Any other scheme: the plain Oceananigans face flux (area included), ρ-weighted as Breeze does.
