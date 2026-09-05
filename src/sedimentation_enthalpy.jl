@@ -98,10 +98,15 @@ end
 end
 
 # Content of the donor cell of a flux through face k: cell k-1 (below) when the velocity at
-# the face is upward, cell k (above) when it is downward.
-@inline function donor_content(phase, T, i, j, k, velocity, constants)
-    @inbounds T_below = T[i, j, k-1]
-    @inbounds T_above = T[i, j, k]
+# the face is upward, cell k (above) when it is downward. Neighbour indices are clamped to
+# 1:Nz (as Breeze's sedimentation does) so the bottom outflow and top faces never read
+# unfilled halos; the direction choice is preserved.
+@inline function donor_content(phase, T, i, j, k, grid, velocity, constants)
+    Nz = size(grid, 3)
+    k_below = max(k - 1, 1)
+    k_above = min(k, Nz)
+    @inbounds T_below = T[i, j, k_below]
+    @inbounds T_above = T[i, j, k_above]
     T_donor = ifelse(velocity ≥ 0, T_below, T_above)
     return condensate_content(phase, T_donor, constants)
 end
@@ -117,10 +122,10 @@ end
     F⁺ᵗ, F⁻ᵗ = face_mass_fluxes(i, j, k, grid, f.advection, ρ, wᵗ, q)
     F⁺, F⁻ = face_mass_fluxes(i, j, k, grid, f.advection, ρ, w, q)
     @inbounds begin
-        h⁺ᵗ = donor_content(f.phase, T, i, j, k+1, wᵗ[i, j, k+1], constants)
-        h⁻ᵗ = donor_content(f.phase, T, i, j, k,   wᵗ[i, j, k],   constants)
-        h⁺  = donor_content(f.phase, T, i, j, k+1, w[i, j, k+1],  constants)
-        h⁻  = donor_content(f.phase, T, i, j, k,   w[i, j, k],    constants)
+        h⁺ᵗ = donor_content(f.phase, T, i, j, k+1, grid, wᵗ[i, j, k+1], constants)
+        h⁻ᵗ = donor_content(f.phase, T, i, j, k,   grid, wᵗ[i, j, k],   constants)
+        h⁺  = donor_content(f.phase, T, i, j, k+1, grid, w[i, j, k+1],  constants)
+        h⁻  = donor_content(f.phase, T, i, j, k,   grid, w[i, j, k],    constants)
     end
     Φ⁺ = h⁺ᵗ * F⁺ᵗ - h⁺ * F⁺
     Φ⁻ = h⁻ᵗ * F⁻ᵗ - h⁻ * F⁻
