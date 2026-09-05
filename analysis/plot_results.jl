@@ -1,10 +1,11 @@
 # Plot the lightweight diagnostics of one or more runs.
 #   julia --project=analysis analysis/plot_results.jl output/run_a output/run_b ...
-# Figures are written to results/<basename>/ (profiles, time series, slices).
+# Figures are written to results/ (or results/$RESULTS_SUBDIR): profiles and slices per run, one
+# time-series overlay, summary.md, and a copy of each run's provenance.
 using CairoMakie, JLD2, Oceananigans, Oceananigans.Units, Statistics, Printf
 
 runs = isempty(ARGS) ? ["output/covert_public_bin_p3_n75"] : ARGS
-results_dir = joinpath(@__DIR__, "..", "results")
+results_dir = joinpath(@__DIR__, "..", "results", get(ENV, "RESULTS_SUBDIR", ""))
 mkpath(results_dir)
 
 function load_series(dir)

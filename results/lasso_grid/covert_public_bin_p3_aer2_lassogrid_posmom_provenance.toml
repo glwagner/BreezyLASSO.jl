@@ -1,0 +1,101 @@
+generated = "2026-09-05T15:10:55.991"
+preset = "covert_public_bin"
+
+[software]
+julia = "1.12.6"
+BreezyLASSO_manifest_sha256 = "f659db6f6114883728ddf86bd6002d298f5d00cbeb75a5568c93ce8b8a329b94"
+Breeze = "0.10.0"
+Oceananigans_source = "https://github.com/CliMA/Oceananigans.jl@c78eeaa at /home/greg_aeolus_earth/.julia/packages/Oceananigans/pSg5m"
+lasso_sam_reference = "https://code.arm.gov/lasso/lasso-ena-codes/lasso_sam_sbm.git branch lasso_ena_noice commit 12d02446a2147388dc89d828e6e0553106abea0f"
+Oceananigans = "0.111.0"
+Breeze_source = "https://github.com/NumericalEarth/Breeze.jl@5fc404c at /home/greg_aeolus_earth/.julia/packages/Breeze/sKhrW"
+BreezyLASSO_source = "unknown at /home/greg_aeolus_earth/BreezyLASSO.jl (checkout 0ee982b4ee6d5534dc819854dd5d7fec73bcafb9, clean)"
+
+[extra]
+gpu = "NVIDIA A100-SXM4-80GB"
+command = "--arch gpu --data data/covert2022_bin --preset covert_public_bin --Nx 256 --Ny 256 --float Float32 --lasso_grid true --moment_advection positive --microphysics p3_aer2 --aerosol_replenishment diagnostic_ccn --output output/covert_public_bin_p3_aer2_lassogrid_posmom"
+hostname = "agcpv2dev-a100u4grsv-0"
+
+[config]
+thermodynamic_tendencies = true
+upper_boundary_relaxation = true
+sedimentation_enthalpy = true
+sam_translation_u = 5.0
+output_dir = "/home/greg_aeolus_earth/BreezyLASSO.jl/output/covert_public_bin_p3_aer2_lassogrid_posmom"
+surface = "prescribed_fluxes"
+initial_droplet_number = 0
+surface_emissivity = 0.98
+microphysics = "p3_aer2"
+advection_order = 5
+scheme = "p3_aer2"
+Nx = 256
+Ny = 256
+stop_time = 21600.0
+temperature_neutral_evaporation = true
+exclude_subsurface_levels = false
+liquid_effective_radius = 1.0e-5
+latitude = 39.05
+ice_effective_radius = 3.0e-5
+translation_velocity_v = -8.0
+"background_CH₄" = 1.85e-6
+longitude = -28.01
+slice_interval = 600.0
+"background_CO₂" = 0.000405
+"N₂" = 281.0
+reference_density = 1.2052584886550903
+progress_interval = 600.0
+radiation = "simple"
+label = "Covert-public-bin development benchmark (not an official LASSO-ENA reproduction) [overrides: Nx, aerosol_replenishment, output_dir, microphysics, Ny, FT, perturbation, z_faces, moment_advection, arch]"
+surface_albedo = 0.07
+FT = "Float32"
+epoch = "2017-07-18T06:00:00"
+radiation_interval = 60
+setting = "aer2"
+"Δt_initial" = 0.5
+p3_initialization = "condensate_free"
+"background_N₂O" = 3.3e-7
+arch = "GPU{CUDABackend}"
+Lx = 8960.0
+namelist_latitude = 39.05
+"max_Δt" = 0.5
+vertical_advection = "full_field"
+cfl = 0.7
+time_stepping = "fixed Δt = 0.5 s"
+"n₁" = 2.2899652032982537e8
+perturbation = "InitialPerturbation(0.1, 2.5e-5, 600.0, 1234)"
+"background_O₃" = "standard_ozone_profile"
+aerosol_density = 1790
+sam_translation_v = -8.0
+moment_advection = "positive"
+day0 = 199.25
+Nz = 260
+moisture_basis = "mixing_ratio"
+translation_frame_applied = true
+output_prefix = "lasso_ena"
+"n₂" = 2.331450080169599e8
+slice_height = 900
+sponge = "SAMSponge"
+geostrophic = true
+timeseries_interval = 60
+bounded_condensate_advection = true
+Ly = 8960.0
+translation_velocity_u = 5.0
+droplet_number = 7.5e7
+wind_nudging_timescale = 0
+closure = "Smagorinsky with coefficient = LillyCoefficient(smagorinsky = 0.16, reduction_factor = 1.0), Pr=1.0"
+aerosol_replenishment = "diagnostic_ccn"
+"N₁" = 276.0
+vant_hoff_factor = 3
+write_output = true
+profile_interval = 3600.0
+molecular_weight_aerosol = 0.115
+
+[inputs]
+snd_sha256 = "58156cb504d7f9ceb1da199c3b47d2735a3c558fa67c1def0756c6a9be1daee4"
+sfc_sha256 = "7a158d2d119eca4c3d7d6f4b96ca4eac524ad862d580a213caeb9af72d787b8a"
+lsf_sha256 = "aaeddf65a1a57ff0b87fcefd41f5d33627f6d968ce548d9f23f8901f5080525c"
+sfc = "/home/greg_aeolus_earth/BreezyLASSO.jl/data/covert2022_bin/sfc"
+prm = "/home/greg_aeolus_earth/BreezyLASSO.jl/data/covert2022_bin/prm"
+snd = "/home/greg_aeolus_earth/BreezyLASSO.jl/data/covert2022_bin/snd"
+prm_sha256 = "a8923d8d21f3bf9f8c844c6f131237ef7868b4b8620123f334251b7d3d6eed3d"
+lsf = "/home/greg_aeolus_earth/BreezyLASSO.jl/data/covert2022_bin/lsf"
