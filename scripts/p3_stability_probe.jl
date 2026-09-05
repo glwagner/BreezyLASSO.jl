@@ -70,6 +70,22 @@ function diagnostics(sim)
         error("non-finite state")
     end
 end
+# Every iteration: catch the first non-finite prognostic before the NaN checker aborts, with
+# the extrema of the moment fields at that moment.
+function iteration_guard(sim)
+    m = sim.model
+    bad = first_bad(m)
+    isnothing(bad) && return nothing
+    println("FIRST NONFINITE PROGNOSTIC: ", bad, " at iteration ", m.clock.iteration, " t = ", m.clock.time, " Δt = ", sim.Δt)
+    for name in (:ρqᶜˡ, :ρnᶜˡ, :ρnᵃ, :ρqʳ, :ρnʳ, :ρqᵛ)
+        haskey(μ, name) || continue
+        f = Array(interior(μ[name]))
+        finite = filter(isfinite, f)
+        println("   ", name, ": nonfinite ", count(!isfinite, f), ", finite extrema ", isempty(finite) ? "none" : extrema(finite))
+    end
+    error("non-finite state")
+end
+add_callback!(case.simulation, iteration_guard, IterationInterval(1))
 add_callback!(case.simulation, diagnostics, TimeInterval(30))
 run!(case.simulation)
 println("PROBE FINITE: ", string(FT), " max_Δt=", max_Δt, " scheme=", scheme)
