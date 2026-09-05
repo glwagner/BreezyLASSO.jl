@@ -565,7 +565,16 @@ if HAVE_COVERT
         @test record["config"]["microphysics"] == "one_moment"
         @test haskey(record["inputs"], "snd_sha256") && haskey(record["inputs"], "prm_sha256")
         @test record["software"]["Breeze_source"] isa String
+        @test occursin("877618e", record["software"]["Oceananigans_source"])
+        @test occursin("5fc404c", record["software"]["Breeze_source"])
         @test record["extra"]["tuple"] == [1, 2]
+        # output writers build (profiles of already-averaged fields, time series, slices)
+        written = lasso_ena_simulation(COVERT_DIR; preset=:covert_public_bin, arch=CPU(), FT=Float32, Nx=8, Ny=8, Lx=280, Ly=280,
+                                       z_faces=collect(range(0, 6000, length=25)), microphysics=:p3_aer2,
+                                       aerosol_replenishment=:diagnostic_ccn, stop_time=1.0, write_output=true,
+                                       output_dir=mktempdir(), progress_interval=100)
+        @test Set(keys(written.simulation.output_writers)) ⊇ Set((:profiles, :timeseries, :slices))
+        @test :cloud_fraction ∈ keys(written.simulation.output_writers[:profiles].outputs)
     end
 end
 

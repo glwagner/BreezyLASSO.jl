@@ -541,7 +541,10 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
     if !isnothing(model.radiation)
         profile_fields = merge(profile_fields, (; radiative_flux_divergence = model.radiation.flux_divergence))
     end
-    profiles = NamedTuple(name => Average(f, dims=(1, 2)) for (name, f) in pairs(profile_fields))
+    # Fields that are already horizontal means (cloud fraction) are written as they are:
+    # Oceananigans main refuses to average over dimensions a field no longer has.
+    profiles = NamedTuple(name => (horizontally_reduced(f) ? f : Average(f, dims=(1, 2)))
+                          for (name, f) in pairs(profile_fields))
 
     simulation.output_writers[:profiles] =
         JLD2Writer(model, profiles; filename = joinpath(output_dir, output_prefix * "_profiles.jld2"),
@@ -571,6 +574,8 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
     return nothing
 end
 
+horizontally_reduced(f) = (loc = Oceananigans.Fields.location(f); loc[1] === Nothing && loc[2] === Nothing)
+
 #####
 ##### Provenance
 #####
@@ -595,6 +600,8 @@ function write_provenance(path, case; extra=NamedTuple())
         "Breeze" => string(Base.pkgversion(Breeze)),
         "Breeze_source" => breeze_source_description(),
         "Oceananigans" => string(Base.pkgversion(Oceananigans)),
+        "Oceananigans_source" => oceananigans_source_description(),
+        "BreezyLASSO_source" => package_source_description(BreezyLASSO),
         "julia" => string(VERSION),
         "lasso_sam_reference" => "https://code.arm.gov/lasso/lasso-ena-codes/lasso_sam_sbm.git branch lasso_ena_noice commit 12d02446a2147388dc89d828e6e0553106abea0f")
     isfile(manifest) && (software["BreezyLASSO_manifest_sha256"] = file_sha256(manifest))
@@ -619,16 +626,29 @@ toml_value(x::AbstractVector) = [toml_value(v) for v in x]
 toml_value(x::NamedTuple) = Dict{String, Any}(string(k) => toml_value(v) for (k, v) in pairs(x))
 toml_value(x) = string(x)
 
-# Breeze's pinned git revision (from the active Manifest) and the dirty state of a
-# `dev`ed checkout, if that is how Breeze is being loaded.
-function breeze_source_description()
-    dir = Base.pkgdir(Breeze)
-    manifest = Base.active_project() === nothing ? "" : joinpath(dirname(Base.active_project()), "Manifest.toml")
+# A pinned dependency's git revision (from the active Manifest) and the dirty state of a
+# `dev`ed checkout, if that is how the package is being loaded.
+breeze_source_description() = package_source_description(Breeze)
+oceananigans_source_description() = package_source_description(Oceananigans)
+
+function package_source_description(package::Module)
+    dir = Base.pkgdir(package)
+    name = string(nameof(package))
+    # BreezyLASSO's own Manifest carries the `[sources]` pins; the active project's Manifest is
+    # the fallback (inside `Pkg.test` the active project is a sandbox).
+    manifests = (joinpath(dirname(dirname(pathof(BreezyLASSO))), "Manifest.toml"),
+                 Base.active_project() === nothing ? "" : joinpath(dirname(Base.active_project()), "Manifest.toml"))
     rev = "unknown"
-    if isfile(manifest)
-        text = read(manifest, String)
-        m = match(r"\[\[deps\.Breeze\]\][^\[]*?repo-rev = \"([^\"]+)\"[^\[]*?repo-url = \"([^\"]+)\"", text)
-        isnothing(m) || (rev = string(m.captures[2], "@", m.captures[1]))
+    block_pattern = Regex("(?s)\\[\\[deps\\.$name\\]\\]\\n(.*?)(?=\\n\\[\\[|\\z)")
+    for manifest in manifests
+        isfile(manifest) || continue
+        block = match(block_pattern, read(manifest, String))
+        isnothing(block) && continue
+        repo_rev = match(r"repo-rev = \"([^\"]+)\"", block.captures[1])
+        repo_url = match(r"repo-url = \"([^\"]+)\"", block.captures[1])
+        (isnothing(repo_rev) || isnothing(repo_url)) && continue
+        rev = string(repo_url.captures[1], "@", repo_rev.captures[1])
+        break
     end
     dirty = ""
     if isdir(joinpath(dir, ".git"))

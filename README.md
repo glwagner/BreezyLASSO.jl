@@ -75,8 +75,26 @@ single-valued at shared faces. It is exercised in an isolated environment (branc
 which follows Oceananigans' renamed `update_advection!` contract and refreshes each scalar's
 limiter on the specific field Breeze advects). Result of the same rain-shaft budget there:
 bounded WENO −0.046 % versus plain −0.048 %, i.e. the bounded residual collapses onto the
-outflow-estimate error, and the full test suite passes. The production pin changes only once
-the P3 GPU smokes pass in that environment as well.
+outflow-estimate error, and the full test suite passes. The 45-minute fixed-Δt (0.5 s) GPU
+probes of P3-N75 and P3-aer2 (Float64, 32²×260, Slurm jobs 853 and 854) then ran finite in
+that environment with the bounded scheme on every water mass, surface `qʳ` staying at
+0.002 g kg⁻¹ (N75) and 0.00003 g kg⁻¹ (aer2) where the 0.111 limiter had piled 9.5 g kg⁻¹.
+On that evidence the production pin was moved to these revisions (see *Dependency notes*).
+
+### Float32 WENO-Z weights overflow on number concentrations (Oceananigans fix)
+
+Every Float32 P3-aer2 run went non-finite at iteration 1 (GPU jobs 836/837/847/848 and the
+8×8 CPU reproduction in `scripts/p3_float32_first_step_probe.jl`), while Float64 ran for
+tens of minutes. `scripts/p3_float32_stage_probe.jl` located it: with every forcing off, the
+stage-2 tendencies of `ρnᵃ` and `ρnᶜˡ` are NaN in the cloud layer, the P3 bundle at those
+cells is finite in both precisions, and the **advection** of `nᵃ` is NaN wherever activation
+at stage 1 has cut the aerosol number from 4.6×10⁸ to 2.8×10⁸ kg⁻¹ within the stencil.
+Oceananigans' WENO-Z weights are `C★ (1 + (τ / (β + ϵ))²)` with `ϵ = 1e-8`: a smooth
+sub-stencil has `β ≈ 0` while the global indicator is `τ ~ Δψ² ≈ 3×10¹⁶`, so the squared
+ratio overflows Float32 (any `Δψ ≳ 4×10⁵` does), one `α` becomes `Inf` and the normalized
+weights become NaN. The fix caps the ratio at `sqrt(floatmax(FT)) / 8` (finite ratios are
+unchanged) and lives on the Oceananigans branch `glw/weno-z-float32-overflow` (commit
+`877618e`, with a regression test on the failing stencil), which this package pins.
 
 ### Breeze fix required for P3-aer2
 
@@ -94,9 +112,14 @@ branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins
   the adaptive-implicit vertical advection (`AdaptiveImplicitVerticalAdvection`) whose
   sedimentation coupling is corrected in Breeze PR 964 is **not** exercised here, so that fix
   is not required for these runs. Switching to AIVA would require rebasing onto PR 964 first.
-- Oceananigans is held at 0.111. Version 0.112 renames `update_advection_timestep!` and
-  rebuilds bounded WENO; migrating needs explicit compatibility work and scalar-bound
-  regression tests rather than a casual bump.
+- Oceananigans is pinned by `[sources]` to the branch `glw/weno-z-float32-overflow` (commit
+  `877618e`, still versioned 0.111.0): `main` at `67a2204` (per-cell bounds-preserving
+  limiter, renamed `update_advection!` contract) plus the Float32 WENO-Z weight cap described
+  above. Breeze is pinned to the branch `glw/lasso-ena-ocmain`
+  (commit `5fc404c`), which stacks that contract (a per-scalar limiter refresh on the specific
+  fields Breeze advects, the acoustic stepper's split time step as an
+  `adaptive_advection_timestep` method) on top of the P3 subnormal-cloud fix of
+  `glw/p3-subnormal-cloud-mass`. Both revisions are recorded in every provenance file.
 
 ## Layout
 

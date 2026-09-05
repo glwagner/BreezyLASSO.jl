@@ -43,36 +43,48 @@ axislegend(ax1, position=:rb)
 save(joinpath(results_dir, "timeseries.png"), fig)
 
 # --- profiles -----------------------------------------------------------------------
+# Column data with the vertical coordinate of its own location (w² sits on faces).
+function column(f)
+    data = vec(Array(interior(f)))
+    grid = f.grid
+    z = length(data) == size(grid, 3) ? znodes(grid, Center()) : znodes(grid, Face())
+    return data, collect(z)
+end
+
+function plot_column!(ax, f, scale=1; kwargs...)
+    data, z = column(f)
+    lines!(ax, scale .* data, z; kwargs...)
+end
+
 for (run, label) in zip(runs, labels)
     p = load_profiles(run)
     times = p["θ"].times
     Nt = length(times)
-    fig = Figure(size=(1300, 750), fontsize=13)
-    axes = [Axis(fig[1, 1], xlabel="θˡ (K)", ylabel="z (m)"), Axis(fig[1, 2], xlabel="qᵛ (g kg⁻¹)"),
-            Axis(fig[1, 3], xlabel="qᶜˡ (g kg⁻¹)"), Axis(fig[1, 4], xlabel="cloud fraction"),
-            Axis(fig[2, 1], xlabel="u, v (m s⁻¹)", ylabel="z (m)"), Axis(fig[2, 2], xlabel="w² (m² s⁻²)"),
-            Axis(fig[2, 3], xlabel="qʳ (g kg⁻¹)"), Axis(fig[2, 4], xlabel="T (K)")]
+    profile_fig = Figure(size=(1300, 750), fontsize=13)
+    axes = [Axis(profile_fig[1, 1], xlabel="θˡ (K)", ylabel="z (m)"), Axis(profile_fig[1, 2], xlabel="qᵛ (g kg⁻¹)"),
+            Axis(profile_fig[1, 3], xlabel="qᶜˡ (g kg⁻¹)"), Axis(profile_fig[1, 4], xlabel="cloud fraction"),
+            Axis(profile_fig[2, 1], xlabel="u, v (m s⁻¹)", ylabel="z (m)"), Axis(profile_fig[2, 2], xlabel="w² (m² s⁻²)"),
+            Axis(profile_fig[2, 3], xlabel="qʳ (g kg⁻¹)"), Axis(profile_fig[2, 4], xlabel="T (K)")]
     for n in 1:Nt
         c = Makie.cgrad(:viridis)[(n - 1) / max(Nt - 1, 1)]
-        lab = @sprintf("%.0f-%.0f h", n == 1 ? 0 : times[n-1] / 3600, times[n] / 3600)
-        z = collect(znodes(p["θ"][n]))
-        lines!(axes[1], vec(interior(p["θ"][n])), z; color=c, label=lab)
-        lines!(axes[2], 1e3 .* vec(interior(p["qᵛ"][n])), z; color=c)
-        lines!(axes[3], 1e3 .* vec(interior(p["qᶜˡ"][n])), z; color=c)
-        lines!(axes[4], vec(interior(p["cloud_fraction"][n])), z; color=c)
-        lines!(axes[5], vec(interior(p["u"][n])), z; color=c)
-        lines!(axes[5], vec(interior(p["v"][n])), z; color=c, linestyle=:dash)
-        lines!(axes[6], vec(interior(p["w²"][n])), z; color=c)
-        lines!(axes[7], 1e3 .* vec(interior(p["qʳ"][n])), z; color=c)
-        lines!(axes[8], vec(interior(p["T"][n])), z; color=c)
+        lab = @sprintf("%.1f-%.1f h", n == 1 ? 0 : times[n-1] / 3600, times[n] / 3600)
+        plot_column!(axes[1], p["θ"][n]; color=c, label=lab)
+        plot_column!(axes[2], p["qᵛ"][n], 1e3; color=c)
+        plot_column!(axes[3], p["qᶜˡ"][n], 1e3; color=c)
+        plot_column!(axes[4], p["cloud_fraction"][n]; color=c)
+        plot_column!(axes[5], p["u"][n]; color=c)
+        plot_column!(axes[5], p["v"][n]; color=c, linestyle=:dash)
+        plot_column!(axes[6], p["w²"][n]; color=c)
+        plot_column!(axes[7], p["qʳ"][n], 1e3; color=c)
+        plot_column!(axes[8], p["T"][n]; color=c)
     end
     for ax in axes
         ylims!(ax, 0, 3000)
     end
     xlims!(axes[1], 288, 312)
     axislegend(axes[1], position=:rb, labelsize=9)
-    Label(fig[0, :], "$label: hourly-mean profiles", fontsize=18, tellwidth=false)
-    save(joinpath(results_dir, "profiles_$label.png"), fig)
+    Label(profile_fig[0, :], "$label: hourly-mean profiles", fontsize=18, tellwidth=false)
+    save(joinpath(results_dir, "profiles_$label.png"), profile_fig)
 end
 
 # --- slices at the last output ------------------------------------------------------
@@ -80,20 +92,22 @@ for (run, label) in zip(runs, labels)
     file = only(filter(f -> endswith(f, "_slices.jld2"), readdir(run; join=true)))
     qxz = FieldTimeSeries(file, "qᶜˡ_xz"); wxy = FieldTimeSeries(file, "w_xy"); lwp = FieldTimeSeries(file, "lwp")
     n = length(qxz.times)
-    fig = Figure(size=(1300, 900), fontsize=13)
-    ax1 = Axis(fig[1, 1:2], xlabel="x (m)", ylabel="z (m)", title=@sprintf("qᶜˡ (kg kg⁻¹) at y = Ly/2, t = %.1f h", qxz.times[n] / 3600))
+    slice_fig = Figure(size=(1300, 900), fontsize=13)
+    top = slice_fig[1, 1] = GridLayout()
+    bottom = slice_fig[2, 1] = GridLayout()
+    ax1 = Axis(top[1, 1], xlabel="x (m)", ylabel="z (m)", title=@sprintf("qᶜˡ (kg kg⁻¹) at y = Ly/2, t = %.1f h", qxz.times[n] / 3600))
     hm1 = heatmap!(ax1, qxz[n]; colormap=:Blues)
     ylims!(ax1, 0, 2500)
-    Colorbar(fig[1, 3], hm1)
-    ax2 = Axis(fig[2, 1], xlabel="x (m)", ylabel="y (m)", title="w at 900 m (m s⁻¹)", aspect=1)
+    Colorbar(top[1, 2], hm1)
+    ax2 = Axis(bottom[1, 1], xlabel="x (m)", ylabel="y (m)", title="w at 900 m (m s⁻¹)", aspect=1)
     wl = maximum(abs, wxy[n]) / 2
     hm2 = heatmap!(ax2, wxy[n]; colormap=:balance, colorrange=(-wl, wl))
-    Colorbar(fig[2, 2], hm2)
-    ax3 = Axis(fig[2, 3], xlabel="x (m)", ylabel="y (m)", title="LWP (g m⁻²)", aspect=1)
+    Colorbar(bottom[1, 2], hm2)
+    ax3 = Axis(bottom[1, 3], xlabel="x (m)", ylabel="y (m)", title="LWP (g m⁻²)", aspect=1)
     hm3 = heatmap!(ax3, 1e3 * lwp[n]; colormap=:viridis)
-    Colorbar(fig[2, 4], hm3)
-    Label(fig[0, :], label, fontsize=18, tellwidth=false)
-    save(joinpath(results_dir, "slices_$label.png"), fig)
+    Colorbar(bottom[1, 4], hm3)
+    Label(slice_fig[0, :], label, fontsize=18, tellwidth=false)
+    save(joinpath(results_dir, "slices_$label.png"), slice_fig)
 end
 # --- provenance and summary ---------------------------------------------------------
 open(joinpath(results_dir, "summary.md"), "w") do io
