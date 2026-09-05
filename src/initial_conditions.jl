@@ -33,10 +33,19 @@ struct SoundingProfiles{FT}
     surface_pressure :: FT
 end
 
-function SoundingProfiles(sounding::SAMSounding; exclude_subsurface_levels=false)
+"""
+    SoundingProfiles(sounding; exclude_subsurface_levels=false, moisture_basis=:mixing_ratio)
+
+`moisture_basis = :mixing_ratio` (SAM's convention: kg per kg dry air) converts the file's
+`q` to Breeze mass fractions `q/(1 + q)`; `:mass_fraction` passes it through.
+"""
+function SoundingProfiles(sounding::SAMSounding; exclude_subsurface_levels=false, moisture_basis=:mixing_ratio)
     z = record_heights(sounding)
     keep = exclude_subsurface_levels ? findall(≥(0), z) : eachindex(z)
-    return SoundingProfiles(z[keep], sounding.θ[keep], sounding.q[keep],
+    qᵗ = moisture_basis === :mixing_ratio ? mass_fraction_from_mixing_ratio.(sounding.q[keep]) :
+         moisture_basis === :mass_fraction ? sounding.q[keep] :
+         throw(ArgumentError("moisture_basis must be :mixing_ratio or :mass_fraction"))
+    return SoundingProfiles(z[keep], sounding.θ[keep], qᵗ,
                             sounding.u[keep], sounding.v[keep], sounding.surface_pressure)
 end
 

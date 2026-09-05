@@ -26,6 +26,18 @@ using NCDatasets: NCDatasets
 using ClimaComms: ClimaComms
 
 """
+    epoch_from_day_of_year(day0; year=2017)
+
+UTC `DateTime` of the fractional day-of-year `day0` (SAM `day0`; 1.0 = 1 January 00 UTC):
+199.25 → 2017-07-18T06:00:00.
+"""
+function epoch_from_day_of_year(day0; year=2017)
+    whole = floor(Int, day0)
+    seconds = round(Int, (day0 - whole) * 86400)
+    return DateTime(year, 1, 1) + Dates.Day(whole - 1) + Dates.Second(seconds)
+end
+
+"""
     lasso_aerosol_modes(FT; setting=:aer2, reference_density, kwargs...)
 
 The two lognormal aerosol modes of the LASSO-ENA spectral-bin configuration converted to
@@ -108,7 +120,10 @@ Keyword arguments:
 - `arch = CPU()`, `FT = Float32`
 - `Nx = 256, Ny = 256, Lx = Ly = 25600`, `z_faces = lasso_ena_vertical_faces()`
 - `day0`: fractional day of year at model time 0 (default: first sounding record)
-- `epoch = DateTime(2017, 7, 18, 6)`: UTC date-time at model time 0 (for RRTMGP)
+- `epoch`: UTC date-time at model time 0 (for RRTMGP); default derived from `day0` in 2017
+- `moisture_basis = :mixing_ratio`: SAM files carry mixing ratios (per kg dry air); converted
+  to Breeze mass fractions for the initial/target profiles and through the exact Jacobian for
+  the `qls` source; `:mass_fraction` passes them through
 - `latitude = 39.0916`, `longitude = -28.0257` (ENA C1); the namelist `latitude0` wins if present
 - `microphysics`: `:one_moment` (1M-control), `:p3_n75` (prescribed droplet number), `:p3_aer2`
   (production; also `:p3_aer1`, `:p3_aer3`)
@@ -134,7 +149,8 @@ function build_case(data_dir;
                               Nx = 256, Ny = 256, Lx = 25600, Ly = 25600,
                               z_faces = lasso_ena_vertical_faces(),
                               day0 = nothing,
-                              epoch = DateTime(2017, 7, 18, 6),
+                              epoch = nothing,
+                              moisture_basis = :mixing_ratio,
                               latitude = 39.0916,
                               longitude = -28.0257,
                               microphysics = :one_moment,
@@ -195,9 +211,10 @@ function build_case(data_dir;
     haskey(namelist, "latitude0") && (latitude = namelist["latitude0"])
     haskey(namelist, "longitude0") && (longitude = namelist["longitude0"])
     day0 = isnothing(day0) ? soundings[1].day : day0
+    epoch = isnothing(epoch) ? epoch_from_day_of_year(day0) : epoch
 
     sounding = soundings[1]
-    profiles = SoundingProfiles(sounding; exclude_subsurface_levels)
+    profiles = SoundingProfiles(sounding; exclude_subsurface_levels, moisture_basis)
 
     #####
     ##### Grid, reference state, dynamics
@@ -257,7 +274,7 @@ function build_case(data_dir;
         large_scale_thermodynamic_forcings(forcing_profiles.tls, forcing_profiles.qls;
                                            microphysics=microphysics_model,
                                            thermodynamic_constants=constants,
-                                           moisture_name) :
+                                           moisture_name, moisture_basis) :
         NamedTuple{(:s, moisture_name)}((nothing, nothing))
 
     vadv = vertical_advection === :full_field ? LargeScaleVerticalAdvection(forcing_profiles.wls) :
@@ -268,7 +285,7 @@ function build_case(data_dir;
     nudging_v = isnothing(wind_nudging_timescale) ? nothing : MeanProfileNudging(vls_frame; timescale=wind_nudging_timescale)
 
     upper = if upper_boundary_relaxation
-        targets = SoundingTargetProfiles(grid, soundings, z_centers, pᵣ; day0)
+        targets = SoundingTargetProfiles(grid, soundings, z_centers, pᵣ; day0, moisture_basis)
         upper_boundary_relaxation_forcings(targets.T, targets.q; microphysics=microphysics_model,
                                            thermodynamic_constants=constants, moisture_name)
     else
@@ -430,6 +447,7 @@ function build_case(data_dir;
     end
 
     config = (; label, arch=string(typeof(arch)), FT=string(FT), Nx, Ny, Nz, Lx, Ly, day0, epoch=string(epoch),
+                moisture_basis=string(moisture_basis),
                 latitude, longitude, microphysics=string(microphysics), droplet_number,
                 radiation=string(radiation), radiation_interval, liquid_effective_radius, ice_effective_radius,
                 surface=string(surface), wind_nudging_timescale=something(wind_nudging_timescale, 0),

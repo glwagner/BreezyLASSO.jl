@@ -24,7 +24,7 @@ using Oceananigans.Operators: Δzᶜᶜᶠ, Δzᶜᶜᶜ
 using Oceananigans.Units: Time
 using Oceananigans.Utils: prettysummary
 using Breeze.AtmosphereModels: AtmosphereModels, grid_moisture_fractions
-using Breeze.Thermodynamics: mixture_heat_capacity
+using Breeze.Thermodynamics: mixture_heat_capacity, dry_air_mass_fraction
 
 # Read a horizontally uniform profile time series at level k and time t.
 @inline profile_value(fts, k, t) = @inbounds fts[1, 1, k, Time(t)]
@@ -208,36 +208,56 @@ Return `(; s = energy_forcing, <moisture_name> = moisture_forcing)` implementing
 `forcing.f90`, which adds `tls` to the temperature-like variable `t` (SAM: `t = T + gz/cp
 - (Lv/cp) qˡ - (Ls/cp) qⁱ` with constant `cp = 1004`) and `qls` to the vapor.
 
+SAM's vapor is a mixing ratio (per kg dry air) while Breeze carries mass fractions, so a
+vapor-only source `R = qls` [kg/kg-dry/s] maps, at fixed dry-basis condensate ratios, to
+`dqᵛ/dt = qᵈ (1 - qᵛ) R` and `dqˣ/dt = -qˣ qᵈ R` for each condensate `x` (`moisture_basis =
+:mixing_ratio`, the default; `:mass_fraction` applies `qls` to `qᵛ` verbatim). The
+condensate part is a ~1 % systematic correction that is applied to the vapor prognostic
+here and documented as omitted for the condensate prognostics themselves.
+
 Breeze's prognostic is `s = cᵖᵐ(q) T + gz - ℒˡ qˡ - ℒⁱ qⁱ`, so the tendencies are mapped so
 that the **physical temperature invariant** holds: over a forcing-only step the state
 must satisfy `dT/dt = tls` and `dqᵛ/dt = qls` at fixed condensate and height. To first
 order in the heat-capacity coupling,
 
-    ds/dt = cᵖᵐ(q) tls + (cᵖᵛ - cᵖᵈ) T qls
+    ds/dt = cᵖᵐ(q) tls + T Σₓ (cˣ - cᵖᵈ) dqˣ/dt
 
-The second term is what keeps the temperature unchanged while vapor with heat capacity
-`cᵖᵛ ≠ cᵖᵈ` is added; multiplying `tls` by `cᵖᵐ` alone (or by SAM's constant `cp`) would
-change `T` whenever `qls ≠ 0`. See `test/test_forcings.jl` for the step test that checks
-both invariants against the reconstructed `T` and against SAM's `t`.
+The second term is what keeps the temperature unchanged while moisture with heat
+capacities `cˣ ≠ cᵖᵈ` changes; multiplying `tls` by `cᵖᵐ` alone (or by SAM's constant
+`cp`) would change `T` whenever `qls ≠ 0`. The step test in `test/runtests.jl` checks both
+invariants against the reconstructed `T`.
 """
-function large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants, moisture_name)
-    energy = LargeScaleEnergyForcing(tls, qls, microphysics, thermodynamic_constants, nothing, Val(moisture_name))
-    moisture = LargeScaleMoistureForcing(qls)
+function large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants, moisture_name,
+                                            moisture_basis=:mixing_ratio)
+    basis = moisture_basis === :mixing_ratio ? Val(:mixing_ratio) :
+            moisture_basis === :mass_fraction ? Val(:mass_fraction) :
+            throw(ArgumentError("moisture_basis must be :mixing_ratio or :mass_fraction"))
+    energy = LargeScaleEnergyForcing(tls, qls, microphysics, thermodynamic_constants, nothing, Val(moisture_name), basis)
+    moisture = LargeScaleMoistureForcing(qls, microphysics, nothing, Val(moisture_name), basis)
     return NamedTuple{(:s, moisture_name)}((energy, moisture))
 end
 
-struct LargeScaleEnergyForcing{T, Q, M, C, D, N}
+# Mass-fraction rates implied by a SAM vapor mixing-ratio source R at fixed dry-basis
+# condensate ratios: dqᵛ/dt = qᵈ (1 - qᵛ) R, dqˣ/dt = -qˣ qᵈ R.
+@inline function moisture_rates(::Val{:mixing_ratio}, q, R)
+    qᵈ = dry_air_mass_fraction(q)
+    return (; vapor = qᵈ * (1 - q.vapor) * R, liquid = -q.liquid * qᵈ * R, ice = -q.ice * qᵈ * R)
+end
+@inline moisture_rates(::Val{:mass_fraction}, q, R) = (; vapor = R, liquid = zero(R), ice = zero(R))
+
+struct LargeScaleEnergyForcing{T, Q, M, C, D, N, B}
     tls :: T
     qls :: Q
     microphysics :: M
     thermodynamic_constants :: C
     density :: D
     moisture_name :: N
+    moisture_basis :: B
 end
 
 Adapt.adapt_structure(to, f::LargeScaleEnergyForcing) =
     LargeScaleEnergyForcing(adapt(to, f.tls), adapt(to, f.qls), adapt(to, f.microphysics),
-                            adapt(to, f.thermodynamic_constants), adapt(to, f.density), f.moisture_name)
+                            adapt(to, f.thermodynamic_constants), adapt(to, f.density), f.moisture_name, f.moisture_basis)
 
 Base.summary(::LargeScaleEnergyForcing) = "LargeScaleEnergyForcing(cᵖᵐ tls + (cᵖᵛ - cᵖᵈ) T qls)"
 Base.show(io::IO, f::LargeScaleEnergyForcing) = print(io, summary(f))
@@ -254,7 +274,10 @@ Base.show(io::IO, f::LargeScaleEnergyForcing) = print(io, summary(f))
     cᵖᵐ = mixture_heat_capacity(q, constants)
     cᵖᵈ = constants.dry_air.heat_capacity
     cᵖᵛ = constants.vapor.heat_capacity
-    return cᵖᵐ * tls + (cᵖᵛ - cᵖᵈ) * T * qls
+    cˡ = constants.liquid.heat_capacity
+    cⁱ = constants.ice.heat_capacity
+    rates = moisture_rates(f.moisture_basis, q, qls)
+    return cᵖᵐ * tls + T * ((cᵖᵛ - cᵖᵈ) * rates.vapor + (cˡ - cᵖᵈ) * rates.liquid + (cⁱ - cᵖᵈ) * rates.ice)
 end
 
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleEnergyForcing,
@@ -263,18 +286,35 @@ function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleEner
     # The scheme's lookup tables must live on the device, as Breeze does for model.microphysics
     microphysics = on_architecture(architecture(field.grid), f.microphysics)
     return LargeScaleEnergyForcing(f.tls, f.qls, microphysics, f.thermodynamic_constants,
-                                   context.total_density, f.moisture_name)
+                                   context.total_density, f.moisture_name, f.moisture_basis)
 end
 
-struct LargeScaleMoistureForcing{Q}
+struct LargeScaleMoistureForcing{Q, M, D, N, B}
     qls :: Q
+    microphysics :: M
+    density :: D
+    moisture_name :: N
+    moisture_basis :: B
 end
 
-Adapt.adapt_structure(to, f::LargeScaleMoistureForcing) = LargeScaleMoistureForcing(adapt(to, f.qls))
-Base.summary(::LargeScaleMoistureForcing) = "LargeScaleMoistureForcing(qls)"
+Adapt.adapt_structure(to, f::LargeScaleMoistureForcing) =
+    LargeScaleMoistureForcing(adapt(to, f.qls), adapt(to, f.microphysics), adapt(to, f.density), f.moisture_name, f.moisture_basis)
+Base.summary(f::LargeScaleMoistureForcing) = string("LargeScaleMoistureForcing(qls, ", f.moisture_basis, ")")
 Base.show(io::IO, f::LargeScaleMoistureForcing) = print(io, summary(f))
 
-@inline (f::LargeScaleMoistureForcing)(i, j, k, grid, clock, fields) = profile_value(f.qls, k, clock.time)
+@inline function (f::LargeScaleMoistureForcing)(i, j, k, grid, clock, fields)
+    R = profile_value(f.qls, k, clock.time)
+    ρ = @inbounds f.density[i, j, k]
+    qᵛᵉ = @inbounds field_by_name(fields, f.moisture_name)[i, j, k]
+    q = grid_moisture_fractions(i, j, k, grid, f.microphysics, ρ, qᵛᵉ, fields)
+    return moisture_rates(f.moisture_basis, q, R).vapor
+end
+
+function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleMoistureForcing,
+                                                               field, name, model_field_names, context::NamedTuple)
+    microphysics = on_architecture(architecture(field.grid), f.microphysics)
+    return LargeScaleMoistureForcing(f.qls, microphysics, context.total_density, f.moisture_name, f.moisture_basis)
+end
 
 #####
 ##### SAM upper sponge (damping.f90)

@@ -142,7 +142,12 @@ end
     @test profiles9.ug[1, 1, 1, Time(0.0)] != profiles9.uls[1, 1, 1, Time(0.0)]
     targets = SoundingTargetProfiles(grid, snd, zc, pᵣ; day0=199.25)
     @test targets.T[1, 1, 1, Time(0.0)] ≈ 292.2 * (pᵣ[1] / 1e5)^(287 / 1004)
-    @test targets.q[1, 1, 1, Time(0.0)] ≈ 11.2e-3
+    @test targets.q[1, 1, 1, Time(0.0)] ≈ 11.2e-3 / (1 + 11.2e-3)       # mixing ratio → mass fraction
+    @test SoundingTargetProfiles(grid, snd, zc, pᵣ; day0=199.25, moisture_basis=:mass_fraction).q[1, 1, 1, Time(0.0)] ≈ 11.2e-3
+    @test mass_fraction_from_mixing_ratio(0.0112) ≈ 0.0112 / 1.0112
+    @test epoch_from_day_of_year(199.25) == DateTime(2017, 7, 18, 6)
+    @test epoch_from_day_of_year(199.0) == DateTime(2017, 7, 18, 0)
+    @test epoch_from_day_of_year(200.5) == DateTime(2017, 7, 19, 12)
 end
 
 @testset "Vertical grid and sponge" begin
@@ -214,22 +219,29 @@ end
     thermo = large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants=constants, moisture_name=:qᵉ)
 
     @testset "tls/qls physical-temperature invariant" begin
-        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
-                                forcing=(; s=thermo.s, qᵉ=thermo.qᵉ))
-        set!(model; T=290.0, qᵗ=8e-3)
-        T₀ = copy(interior(model.temperature)); q₀ = copy(interior(model.microphysical_fields.qᵛ))
-        Δt = 10.0
-        for _ in 1:10
-            time_step!(model, Δt)
+        for basis in (:mass_fraction, :mixing_ratio)
+            thermo_b = large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants=constants,
+                                                          moisture_name=:qᵉ, moisture_basis=basis)
+            model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                    forcing=(; s=thermo_b.s, qᵉ=thermo_b.qᵉ))
+            set!(model; T=290.0, qᵗ=8e-3)
+            T₀ = copy(interior(model.temperature)); q₀ = copy(interior(model.microphysical_fields.qᵛ))
+            Δt = 10.0
+            for _ in 1:10
+                time_step!(model, Δt)
+            end
+            ΔT = interior(model.temperature) .- T₀
+            Δq = interior(model.microphysical_fields.qᵛ) .- q₀
+            @test all(isapprox.(ΔT, -5e-5 * 100; rtol=1e-3))   # dT/dt = tls while vapor is forced
+            if basis === :mass_fraction
+                @test all(isapprox.(Δq, 1e-7 * 100; rtol=1e-6))    # dqᵛ/dt = qls verbatim
+            else
+                # SAM mixing-ratio source R: dqᵛ/dt = qᵈ (1 - qᵛ) R with qᵈ = 1 - qᵗ (no condensate here)
+                expected = @. (1 - q₀) * (1 - q₀) * 1e-7 * 100
+                @test all(isapprox.(Δq, expected; rtol=1e-3))
+                @test all(Δq .< 1e-7 * 100)                        # ~1.6 % below the verbatim rate
+            end
         end
-        ΔT = interior(model.temperature) .- T₀
-        Δq = interior(model.microphysical_fields.qᵛ) .- q₀
-        @test all(isapprox.(ΔT, -5e-5 * 100; rtol=1e-3))   # dT/dt = tls while vapor is forced
-        @test all(isapprox.(Δq, 1e-7 * 100; rtol=1e-6))    # dqᵛ/dt = qls
-        # SAM's t = T + gz/cp: with constant cp the same increments hold for its coordinate
-        cp_sam = 1004.0
-        Δt_sam = ΔT # t = T + gz/cp − (L/cp) qˡ with qˡ = 0 and fixed z
-        @test all(isapprox.(Δt_sam, -5e-5 * 100; rtol=1e-3))
     end
 
     @testset "mean-profile nudging leaves eddies alone" begin
@@ -387,6 +399,32 @@ end
     ΔT_with = rain_column(true)
     @test maximum(abs, ΔT_without) > 1      # rain arriving without its enthalpy warms by ~ℒΔqʳ/cᵖ
     @test maximum(abs, ΔT_with) < 0.05       # with the transport the column stays isothermal
+
+    # Donor-cell content: cold rain from above the jump (T = 280 K) falling into warm air
+    # (285 K) cools the receiving cells by Δq (cˡ - cᵖᵈ)(T_cold - T_warm) / cᵖᵐ of the rain
+    # that has passed, which a face-centered content would halve at the jump.
+    T_jump = [z > 600 ? 280.0 : 285.0 for z in zc]
+    qsat_jump = [saturation_specific_humidity(T_jump[k], ρᵣ[k], constants, PlanarLiquidSurface()) for k in 1:40]
+    forcing = (; ρs = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants))
+    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants,
+                            momentum_advection=WENO(order=5), scalar_advection, forcing)
+    set!(model; T=col(T_jump), qᵛ=col(qsat_jump), qʳ=col(qʳ₀), nʳ=col(nʳ₀))
+    Tᵢ = copy(interior(model.temperature)); qʳᵢ = copy(interior(model.microphysical_fields.qʳ))
+    for _ in 1:8   # ~8 s: the rain front crosses the jump at 612.5 m but stays above the bottom
+        time_step!(model, 1.0)
+    end
+    ΔT = interior(model.temperature) .- Tᵢ
+    Δqʳ = interior(model.microphysical_fields.qʳ) .- qʳᵢ
+    k_warm = findlast(≤(600), zc)                       # first warm cell below the jump
+    cᵖᵐ = 1005 * (1 - qsat_jump[k_warm]) + 1850 * qsat_jump[k_warm]
+    expected = Δqʳ[1, 1, k_warm] * (4181 - 1005) * (280 - 285) / cᵖᵐ
+    @test Δqʳ[1, 1, k_warm] > 1e-4                      # rain has arrived in the warm cell
+    @test ΔT[1, 1, k_warm] < 0                           # ... and cooled it (donor-cell content)
+    # the cell's cumulative inflow exceeds the net gain (rain also leaves below), so the
+    # cooling is larger than the net-gain estimate but bounded by the inflow over the step
+    @test expected * 4 < ΔT[1, 1, k_warm] < expected
+    @test abs(ΔT[1, 1, k_warm - 1]) < 5e-3               # rain leaving at 285 K does not cool the next cell
+    @test all(abs.(ΔT[:, :, 1:k_warm-3]) .< 1e-6)        # nothing below the front yet
     forcings = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)
     @test length(forcings) == 4               # cloud liquid, rain, ice, liquid on ice
     @test Breeze.AtmosphereModels.is_density_tendency_forcing(forcings[1])

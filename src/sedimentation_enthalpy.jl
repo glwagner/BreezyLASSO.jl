@@ -18,9 +18,13 @@
 ##### unit of condensate mass fraction at fixed temperature and fixed (anelastic) cell mass,
 ##### h = ∂s/∂qˣ|_T = (cˣ - cᵖᵈ) T - ℒˣ, because in Breeze's mass-fraction bookkeeping
 ##### s = [qᵈ cᵖᵈ + qᵛ cᵖᵛ + qˡ cˡ + qⁱ cⁱ] T + gz - ℒˡ qˡ - ℒⁱ qⁱ with qᵈ = 1 - qᵛ - qˡ - qⁱ:
-##### condensate that sediments out of a cell is replaced by dry air mass. With this
-##### content a rain shaft crossing an isothermal, saturated column leaves the temperature
-##### unchanged (tested); the gravitational part gz is left behind as dissipative heating.
+##### condensate that sediments out of a cell is replaced by dry air mass. Each of the two
+##### upwind-biased mass fluxes carries the content of its own donor cell (the cell the
+##### flux leaves: above the face for downward, below for upward velocity), since the
+##### total and resolved velocities at a face can point in different directions. A rain
+##### shaft crossing an isothermal saturated column leaves T unchanged (5 mK), and cold rain
+##### entering warmer air cools it by the donor-based mixing amount (both tested); the
+##### gravitational part gz is left behind as dissipative heating.
 #####
 
 using Adapt: Adapt, adapt
@@ -93,18 +97,34 @@ end
     return F⁺, F⁻
 end
 
+# Content of the donor cell of a flux through face k: cell k-1 (below) when the velocity at
+# the face is upward, cell k (above) when it is downward.
+@inline function donor_content(phase, T, i, j, k, velocity, constants)
+    @inbounds T_below = T[i, j, k-1]
+    @inbounds T_above = T[i, j, k]
+    T_donor = ifelse(velocity ≥ 0, T_below, T_above)
+    return condensate_content(phase, T_donor, constants)
+end
+
 @inline function (f::SedimentationEnthalpyForcing)(i, j, k, grid, clock, fields)
     q = field_by_name(fields, f.mass_name)
     wq = field_by_name(fields, f.velocity_name)
     w = fields.w
     T = fields.T
     ρ = f.density
+    constants = f.thermodynamic_constants
     wᵗ = SumOfArrays{2}(w, wq)
     F⁺ᵗ, F⁻ᵗ = face_mass_fluxes(i, j, k, grid, f.advection, ρ, wᵗ, q)
     F⁺, F⁻ = face_mass_fluxes(i, j, k, grid, f.advection, ρ, w, q)
-    h⁺ = condensate_content(f.phase, ℑzᵃᵃᶠ(i, j, k+1, grid, T), f.thermodynamic_constants)
-    h⁻ = condensate_content(f.phase, ℑzᵃᵃᶠ(i, j, k,   grid, T), f.thermodynamic_constants)
-    return - V⁻¹ᶜᶜᶜ(i, j, k, grid) * (h⁺ * (F⁺ᵗ - F⁺) - h⁻ * (F⁻ᵗ - F⁻))
+    @inbounds begin
+        h⁺ᵗ = donor_content(f.phase, T, i, j, k+1, wᵗ[i, j, k+1], constants)
+        h⁻ᵗ = donor_content(f.phase, T, i, j, k,   wᵗ[i, j, k],   constants)
+        h⁺  = donor_content(f.phase, T, i, j, k+1, w[i, j, k+1],  constants)
+        h⁻  = donor_content(f.phase, T, i, j, k,   w[i, j, k],    constants)
+    end
+    Φ⁺ = h⁺ᵗ * F⁺ᵗ - h⁺ * F⁺
+    Φ⁻ = h⁻ᵗ * F⁻ᵗ - h⁻ * F⁻
+    return - V⁻¹ᶜᶜᶜ(i, j, k, grid) * (Φ⁺ - Φ⁻)
 end
 
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::SedimentationEnthalpyForcing,

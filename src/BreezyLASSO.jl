@@ -14,7 +14,7 @@ export
     # SAM input files
     SAMSounding, SAMLargeScaleForcing, SAMSurfaceForcing,
     read_sam_sounding, read_sam_large_scale_forcing, read_sam_surface_forcing, read_sam_namelist,
-    sam_hydrostatic_heights, record_heights, interpolate_profile, day_to_seconds, file_sha256,
+    sam_hydrostatic_heights, record_heights, interpolate_profile, day_to_seconds, file_sha256, mass_fraction_from_mixing_ratio,
     # grids and profiles
     lasso_ena_cell_centers, lasso_ena_vertical_faces, uniform_vertical_faces,
     LargeScaleForcingProfiles, profile_time_series, surface_time_series, sam_interpolate_column,
@@ -31,7 +31,7 @@ export
     # initial state
     SoundingProfiles, saturation_partition, InitialPerturbation, initial_state_columns, perturbation_array,
     # case
-    lasso_ena_simulation, build_case, lasso_aerosol_modes, write_provenance, read_sam_grd, faces_from_centers,
+    lasso_ena_simulation, build_case, lasso_aerosol_modes, write_provenance, read_sam_grd, faces_from_centers, epoch_from_day_of_year,
     covert_public_bin_vertical_faces, AerosolReplenishment, DiagnosticCCNProjection,
     # diagnostics
     cloud_liquid, rain_mass_fraction, liquid_water_path, cloud_fraction, cloud_fraction_profile,

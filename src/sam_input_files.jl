@@ -307,6 +307,14 @@ function interpolate_profile(x, y, ξ::Number)
 end
 
 """
+    mass_fraction_from_mixing_ratio(r)
+
+SAM's moisture variables are mixing ratios (kg per kg *dry* air; `sat.f90`: `qsatw =
+0.622 e/(p - e)`), Breeze's are mass fractions of total air: `q = r / (1 + r)`.
+"""
+mass_fraction_from_mixing_ratio(r) = r / (1 + r)
+
+"""
     day_to_seconds(day, day0)
 
 Seconds elapsed since the fractional day-of-year `day0`.

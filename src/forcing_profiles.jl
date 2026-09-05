@@ -159,7 +159,7 @@ interpolated in pressure and height-coordinate records in height, as `forcing.f9
 above the sounding top the last value is held.
 """
 function SoundingTargetProfiles(grid, soundings::Vector{<:SAMSounding}, z_centers, reference_pressure;
-                                day0, R=287.0, cp=1004.0, standard_pressure=1e5)
+                                day0, R=287.0, cp=1004.0, standard_pressure=1e5, moisture_basis=:mixing_ratio)
     FT = eltype(grid)
     times = FT[day_to_seconds(r.day, day0) for r in soundings]
     if length(soundings) == 1
@@ -175,7 +175,8 @@ function SoundingTargetProfiles(grid, soundings::Vector{<:SAMSounding}, z_center
         sam_interpolate_column(x, getter(r), xq; pressure_grid, above=:hold)
     end
     T_columns = [column(r, r -> r.θ) .* Π for r in soundings]
-    q_columns = [column(r, r -> r.q) for r in soundings]
+    convert_q = moisture_basis === :mixing_ratio ? mass_fraction_from_mixing_ratio : identity
+    q_columns = [convert_q.(column(r, r -> r.q)) for r in soundings]
     return (; times, T = profile_time_series(grid, times, T_columns), q = profile_time_series(grid, times, q_columns))
 end
 
