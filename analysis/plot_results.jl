@@ -95,4 +95,18 @@ for (run, label) in zip(runs, labels)
     Label(fig[0, :], label, fontsize=18, tellwidth=false)
     save(joinpath(results_dir, "slices_$label.png"), fig)
 end
+# --- provenance and summary ---------------------------------------------------------
+open(joinpath(results_dir, "summary.md"), "w") do io
+    println(io, "| run | label | hours | final LWP (g m⁻²) | mean LWP last hour | final cloud fraction | final rain (mm day⁻¹) |")
+    println(io, "|---|---|---|---|---|---|---|")
+    for (run, label) in zip(runs, labels)
+        s = load_series(run)
+        prov = joinpath(run, "provenance.toml")
+        isfile(prov) && cp(prov, joinpath(results_dir, "$(label)_provenance.toml"); force=true)
+        caselabel = isfile(prov) ? something(match(r"label = \"([^\"]*)\"", read(prov, String)), (; captures=[""])).captures[1] : ""
+        last_hour = s.t .≥ s.t[end] - 3600
+        @printf(io, "| %s | %s | %.1f | %.1f | %.1f | %.2f | %.3f |\n", label, caselabel, s.t[end] / 3600,
+                1e3 * s.lwp[end], 1e3 * mean(s.lwp[last_hour]), s.cf[end], 86400 * s.rain[end])
+    end
+end
 println("figures written to ", abspath(results_dir))
