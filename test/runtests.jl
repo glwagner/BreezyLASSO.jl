@@ -382,7 +382,7 @@ if HAVE_COVERT
     @testset "Covert public-bin preset builds and steps" begin
         case = lasso_ena_simulation(COVERT_DIR; preset=:covert_public_bin, Nx=8, Ny=8, Lx=280, Ly=280,
                                     z_faces=collect(range(0, 6000, length=25)), microphysics=:one_moment,
-                                    stop_time=4.0, Δt=1.0, write_output=false, progress_interval=100)
+                                    stop_time=4.0, write_output=false, progress_interval=100)
         @test occursin("Covert-public-bin", case.config.label)
         @test case.config.surface == "prescribed_fluxes" && case.config.radiation == "simple"
         @test case.config.wind_nudging_timescale == 0
