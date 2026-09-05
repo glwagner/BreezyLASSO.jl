@@ -19,6 +19,7 @@
 using Adapt: Adapt, adapt
 using Oceananigans: Field, Average, compute!, set!
 using Oceananigans.Grids: Center, Face, XDirection, YDirection, znodes, znode
+using Oceananigans.Architectures: architecture, on_architecture
 using Oceananigans.Operators: Δzᶜᶜᶠ, Δzᶜᶜᶜ
 using Oceananigans.Units: Time
 using Oceananigans.Utils: prettysummary
@@ -259,7 +260,9 @@ end
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleEnergyForcing,
                                                                field, name, model_field_names, context::NamedTuple)
     name === :s || throw(ArgumentError("LargeScaleEnergyForcing must be supplied under the `s` key, got $name"))
-    return LargeScaleEnergyForcing(f.tls, f.qls, f.microphysics, f.thermodynamic_constants,
+    # The scheme's lookup tables must live on the device, as Breeze does for model.microphysics
+    microphysics = on_architecture(architecture(field.grid), f.microphysics)
+    return LargeScaleEnergyForcing(f.tls, f.qls, microphysics, f.thermodynamic_constants,
                                    context.total_density, f.moisture_name)
 end
 
@@ -439,7 +442,8 @@ function AtmosphereModels.materialize_atmosphere_model_forcing(f::UpperBoundaryE
                                                                field, name, model_field_names, context::NamedTuple)
     name === :s || throw(ArgumentError("UpperBoundaryEnergyRelaxation must be supplied under the `s` key, got $name"))
     FT = eltype(field.grid)
-    return UpperBoundaryEnergyRelaxation(f.target, f.moisture_target, f.microphysics, f.thermodynamic_constants,
+    microphysics = on_architecture(architecture(field.grid), f.microphysics)
+    return UpperBoundaryEnergyRelaxation(f.target, f.moisture_target, microphysics, f.thermodynamic_constants,
                                          context.total_density, f.moisture_name, convert(FT, f.rate), f.levels)
 end
 
