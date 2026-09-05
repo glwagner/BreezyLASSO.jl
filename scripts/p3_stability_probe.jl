@@ -3,6 +3,7 @@
 #   julia --project scripts/p3_stability_probe.jl <cpu|gpu> <Float32|Float64> <max_dt> [minutes] [microphysics] [off-switches]
 # off-switches: comma-separated subset of vadv,thermo,nudging,sponge,geo,upper,radiation,surface,closure
 using BreezyLASSO, Breeze, Oceananigans, Oceananigans.Units, CUDA, Printf, Statistics
+using Oceananigans.Grids: zspacings
 
 arch = lowercase(ARGS[1]) == "gpu" ? GPU() : CPU()
 FT = ARGS[2] == "Float64" ? Float64 : Float32
@@ -35,11 +36,29 @@ function first_bad(model)
     end
     return nothing
 end
+# Water budget: domain-integrated water mass versus the surface vapor flux in and rain flux out
+grid_ = model.grid
+Δz_ = Array(zspacings(grid_, Center())); Δx_ = grid_.Lx / grid_.Nx; Δy_ = grid_.Ly / grid_.Ny
+ρ_ = Array(interior(model.dynamics.reference_state.density, 1, 1, :))
+ρΔV_ = reshape(ρ_ .* Δz_ .* (Δx_ * Δy_), 1, 1, :)
+water_mass(m) = sum(Array(interior(m.microphysical_fields.qᵛ)) .* ρΔV_) + sum(Array(interior(m.microphysical_fields.qᶜˡ)) .* ρΔV_) + sum(Array(interior(m.microphysical_fields.qʳ)) .* ρΔV_)
+rain_flux_field = surface_rain_flux(model)
+last_time = Ref(0.0); accumulated_rain = Ref(0.0); accumulated_vapor = Ref(0.0); water₀ = Ref(water_mass(model))
+ℒ_ = ThermodynamicConstants(Float64).liquid.reference_latent_heat
+sfc_times = [day_to_seconds(d, case.config.day0) for d in case.sfc.day]
+sfc_E = case.sfc.latent_heat_flux ./ ℒ_
 function diagnostics(sim)
     m = sim.model
-    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | qᵛ min %.2e\n",
-            m.clock.time / 60, sim.Δt, maximum(μ.qʳ), minimum(μ.ρnʳ), maximum(μ.ρnʳ), maximum(μ.qᶜˡ),
-            maximum(abs, m.velocities.w), minimum(m.temperature), maximum(m.temperature), minimum(μ.qᵛ))
+    Δt_diag = m.clock.time - last_time[]; last_time[] = m.clock.time
+    compute!(rain_flux_field)
+    accumulated_rain[] += sum(Array(interior(rain_flux_field))) * Δx_ * Δy_ * Δt_diag
+    E = case.config.surface == "prescribed_fluxes" ? interpolate_profile(sfc_times, sfc_E, m.clock.time) : 0.0
+    accumulated_vapor[] += E * grid_.Lx * grid_.Ly * Δt_diag
+    budget = water_mass(m) - water₀[] - accumulated_vapor[] + accumulated_rain[]
+    qʳ_bottom = maximum(Array(interior(μ.qʳ, :, :, 1)))
+    @printf("t=%6.1f min Δt=%.2f | qʳ max %.2e (k=1 max %.2e, min ρqʳ %.2e) | ρnʳ [%.2e, %.2e] | qᶜˡ max %.2e | max|w| %.2f | T [%.1f, %.1f] | water budget residual %.3e kg (of %.3e)\n",
+            m.clock.time / 60, sim.Δt, maximum(μ.qʳ), qʳ_bottom, minimum(μ.ρqʳ), minimum(μ.ρnʳ), maximum(μ.ρnʳ), maximum(μ.qᶜˡ),
+            maximum(abs, m.velocities.w), minimum(m.temperature), maximum(m.temperature), budget, water₀[])
     bad = first_bad(m)
     if !isnothing(bad)
         println("FIRST NONFINITE PROGNOSTIC: ", bad, " at t = ", m.clock.time, " iteration ", m.clock.iteration)

@@ -94,15 +94,29 @@ end
 
 is_p3(microphysics) = microphysics isa Breeze.Microphysics.PredictedParticleProperties.PredictedParticlePropertiesMicrophysics
 
-# Mass-like prognostic densities are advected with bounds-preserving WENO; number and
-# volume moments with plain WENO (their per-mass magnitudes are not bounded by 1).
-function scalar_advection_schemes(order, microphysics, moisture_name)
+"""
+    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=false)
+
+Advection scheme per prognostic scalar. The moisture prognostic (vapor / equilibrium
+moisture) uses bounds-preserving WENO; energy, number and volume moments use plain WENO.
+Condensate masses use plain WENO by default: Oceananigans' bounds-preserving WENO limits
+only the upwind reconstruction of the cell it is evaluated in, so when its limiter fires the
+two cells sharing a face see different fluxes and mass is not conserved. With P3's large
+sedimentation velocities that fired persistently in the sharp rain layer above the surface,
+piling phantom rain into the surface cell (and, through the negative-moisture repair,
+converting vapor to rain) until the run blew up. Plain WENO is conservative; the small
+negative undershoots it can produce are repaired by the scheme's `SpeciesBorrowing`.
+`bounded_condensates = true` restores the bounded scheme for condensate masses.
+"""
+function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=false)
     weno = WENO(; order)
     bounded = WENO(; order, bounds=(0, 1))
-    names = (:ρs, Symbol("ρ", moisture_name), Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
+    moisture = Symbol("ρ", moisture_name)
+    names = (:ρs, moisture, Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
     schemes = map(names) do name
         s = string(name)
-        occursin("ρq", s) ? bounded : weno
+        name === moisture ? bounded :
+        (occursin("ρq", s) && bounded_condensates) ? bounded : weno
     end
     return NamedTuple{names}(schemes)
 end
@@ -181,6 +195,7 @@ function build_case(data_dir;
                               initial_droplet_number = nothing,
                               aerosol_replenishment = nothing,
                               sedimentation_enthalpy = true,
+                              bounded_condensate_advection = false,
                               label = "unlabeled",
                               output_dir = "output",
                               output_prefix = "lasso_ena",
@@ -246,7 +261,8 @@ function build_case(data_dir;
     moisture_name = Breeze.AtmosphereModels.moisture_specific_name(microphysics_model)
 
     momentum_advection = WENO(order=advection_order)
-    scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name)
+    scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name;
+                                                bounded_condensates=bounded_condensate_advection)
 
     #####
     ##### Large-scale forcing
@@ -466,7 +482,7 @@ function build_case(data_dir;
                 exclude_subsurface_levels, temperature_neutral_evaporation,
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
-                aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy,
+                aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy, bounded_condensate_advection,
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
 
