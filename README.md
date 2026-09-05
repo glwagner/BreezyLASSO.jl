@@ -125,6 +125,7 @@ mode, translation frame, aerosol chemistry, and any overrides).
 - P3 versus HUJI-SBM/Morrison: no bin spectra; the SBM initializes condensate-free with
   `qᵗ = q0` (the default `p3_initialization = :condensate_free` mirrors that; `:equilibrium` is
   a labelled alternative that starts from the 1M control's saturation partition).
+- P3 condensate masses use plain WENO (conservative; P3 repairs undershoots); one-moment rain keeps the bounded scheme.
 - RRTMGP columns end at the LES top (no radiative-only layers up to TOA as in SAM's RRTMG), so
   the `:rrtmgp` option is a Breeze *analog* of the official radiation until padded-column
   fluxes are validated; effective radii are prescribed, not diagnosed from P3.
