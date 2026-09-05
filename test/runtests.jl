@@ -1,0 +1,377 @@
+using Test
+using BreezyLASSO
+using Breeze
+using Oceananigans
+using Oceananigans.Units
+using Oceananigans.Units: Time
+using Statistics
+using Random
+
+const FIXTURES = joinpath(@__DIR__, "fixtures")
+const COVERT_DIR = joinpath(@__DIR__, "..", "data", "covert2022_bin")
+const HAVE_COVERT = isfile(joinpath(COVERT_DIR, "snd")) && isfile(joinpath(COVERT_DIR, "lsf")) &&
+                    isfile(joinpath(COVERT_DIR, "sfc")) && isfile(joinpath(COVERT_DIR, "prm"))
+
+test_grid(; Nx=8, Ny=8, Nz=24, Lz=6000) =
+    RectilinearGrid(CPU(), Float64; size=(Nx, Ny, Nz), x=(0, 800), y=(0, 800), z=(0, Lz),
+                    halo=(5, 5, 5), topology=(Periodic, Periodic, Bounded))
+
+@testset "SAM input files" begin
+    @testset "sounding on pressure levels" begin
+        snd = read_sam_sounding(joinpath(FIXTURES, "snd_pressure"))
+        @test length(snd) == 2
+        @test snd[1].day == 199.25 && snd[2].day == 199.5
+        @test snd[1].surface_pressure == 101930
+        @test all(isnan, snd[1].z)               # -9999 → missing heights, records retained
+        @test snd[1].p[1] == 104000 && snd[1].θ[1] == 292.2 && snd[1].q[1] ≈ 11.2e-3
+        z = record_heights(snd[1])
+        @test z[1] < 0                            # below-surface level kept (SAM interpolates through it)
+        @test issorted(z)
+        @test issorted([r.day for r in snd])      # time monotonicity
+    end
+
+    @testset "large-scale forcing layouts" begin
+        lsf7 = read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_7col"))
+        @test length(lsf7) == 2
+        @test !lsf7[1].has_geostrophic_columns
+        @test lsf7[1].ug == lsf7[1].uls && lsf7[1].vg == lsf7[1].vls   # LASSO fallback: ug/vg alias uls/vls
+        @test lsf7[2].tls[1] == -8e-5 && lsf7[2].wls[2] == -0.006
+        @test issorted([r.day for r in lsf7])
+
+        lsf9 = read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_9col_height"))
+        @test lsf9[1].has_geostrophic_columns
+        @test lsf9[1].ug == [3.0, 5.0, 9.0] && lsf9[1].vg == [-6.0, -7.0, -8.0]
+        @test lsf9[1].tls[1] == -4e-5                                  # Fortran D exponent
+        @test all(isfinite, lsf9[1].z)                                 # height-coordinate record
+
+        @test_throws ErrorException read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_malformed"))
+    end
+
+    @testset "surface forcing and namelist" begin
+        sfc = read_sam_surface_forcing(joinpath(FIXTURES, "sfc"))
+        @test sfc.day == [199.25, 199.375, 199.5]
+        @test sfc.latent_heat_flux[2] == 112.197 && sfc.kinematic_stress[1] == 0.0625
+        prm = read_sam_namelist(joinpath(FIXTURES, "prm"))
+        @test prm["caseid"] == "16x16x24"
+        @test prm["sfc_flx_fxd"] === true && prm["doshortwave"] === false
+        @test prm["latitude0"] == 39.05 && prm["ug"] == 5.0 && prm["vg"] == -8.0
+        @test prm["nstop"] == 43200 && prm["dt"] == 0.5 && prm["day0"] == 199.25
+        @test prm["tauls"] == 10800.0
+        @test !haskey(prm, "comment")
+        @test eltype(values(prm)) <: Union{Bool, Int, Float64, String}
+    end
+
+    @testset "hydrostatic heights (setdata.f90)" begin
+        p = [104000.0, 100000.0, 90000.0]
+        θ = [292.2, 292.2, 298.5]
+        z = sam_hydrostatic_heights(p, θ, 101930.0)
+        T1 = 292.2 * (1.04)^(287 / 1004)
+        @test z[1] ≈ 287 / 9.81 * T1 * log(101930 / 104000)
+        @test z[2] > 0 && z[3] > z[2]
+    end
+
+    @testset "day conversion and checksum" begin
+        @test day_to_seconds(199.5, 199.25) == 21600
+        @test length(file_sha256(joinpath(FIXTURES, "sfc"))) == 64
+    end
+
+    if HAVE_COVERT
+        @testset "Covert public-bin regression" begin
+            snd = read_sam_sounding(joinpath(COVERT_DIR, "snd"))
+            lsf = read_sam_large_scale_forcing(joinpath(COVERT_DIR, "lsf"))
+            sfc = read_sam_surface_forcing(joinpath(COVERT_DIR, "sfc"))
+            prm = read_sam_namelist(joinpath(COVERT_DIR, "prm"))
+            @test length(snd) == 4 && length(lsf) == 5 && length(sfc.day) == 5
+            @test snd[1].surface_pressure == 101930
+            z = record_heights(snd[1])
+            @test isapprox(z[1:3], [-173.8, 35.8, 249.2]; atol=0.1)
+            @test !lsf[1].has_geostrophic_columns
+            @test prm["caseid"] == "256x256x192" && prm["dx"] == 35.0 && prm["nstop"] * prm["dt"] == 21600
+        end
+    else
+        @info "Covert public inputs not present in data/; skipping the regression fixture (run scripts/fetch_inputs.jl)"
+    end
+end
+
+@testset "SAM column interpolation (forcing.f90)" begin
+    # pressure coordinate: linear in p; above the record top tls → 0, winds hold
+    p = [105000.0, 90000.0, 70000.0]
+    y = [1.0, 2.0, 3.0]
+    pq = [100000.0, 80000.0, 60000.0, 50000.0]
+    @test sam_interpolate_column(p, y, pq; pressure_grid=true, above=:zero) ≈ [4/3, 2.5, 0.0, 0.0]
+    @test sam_interpolate_column(p, y, pq; pressure_grid=true, above=:hold) ≈ [4/3, 2.5, 2.5, 2.5]
+    # below the first level: linear extrapolation through the first two levels (SAM coef < 0)
+    @test sam_interpolate_column(p, y, [110000.0]; pressure_grid=true) ≈ [1 - 5000/15000]
+    # height coordinate: linear in z
+    z = [0.0, 1000.0, 3000.0]
+    @test sam_interpolate_column(z, y, [500.0, 2000.0, 4000.0]; pressure_grid=false, above=:zero) ≈ [1.5, 2.5, 0.0]
+    @test sam_interpolate_column(z, y, [500.0, 2000.0, 4000.0]; pressure_grid=false, above=:hold) ≈ [1.5, 2.5, 2.5]
+
+    grid = test_grid()
+    snd = read_sam_sounding(joinpath(FIXTURES, "snd_pressure"))
+    lsf7 = read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_7col"))
+    zc = Array(znodes(grid, Center()))
+    pᵣ = 101930 .* exp.(-zc ./ 8000)
+    profiles = LargeScaleForcingProfiles(grid, lsf7, zc, pᵣ; day0=199.25)
+    @test profiles.times == [0.0, 21600.0]
+    # top of the domain is above the 700 hPa record top: tls/qls/wls zero, winds held
+    @test profiles.tls[1, 1, grid.Nz, Time(0.0)] == 0
+    @test profiles.wls[1, 1, grid.Nz, Time(0.0)] == 0
+    @test profiles.uls[1, 1, grid.Nz, Time(0.0)] == 10.0
+    @test profiles.ug[1, 1, grid.Nz, Time(0.0)] == 10.0
+    # linear time interpolation between the two records
+    @test profiles.tls[1, 1, 1, Time(10800.0)] ≈ (profiles.tls[1, 1, 1, Time(0.0)] + profiles.tls[1, 1, 1, Time(21600.0)]) / 2
+    lsf9 = read_sam_large_scale_forcing(joinpath(FIXTURES, "lsf_9col_height"))
+    profiles9 = LargeScaleForcingProfiles(grid, lsf9, zc, pᵣ; day0=199.25)
+    @test profiles9.has_geostrophic_columns
+    @test profiles9.ug[1, 1, 1, Time(0.0)] != profiles9.uls[1, 1, 1, Time(0.0)]
+    targets = SoundingTargetProfiles(grid, snd, zc, pᵣ; day0=199.25)
+    @test targets.T[1, 1, 1, Time(0.0)] ≈ 292.2 * (pᵣ[1] / 1e5)^(287 / 1004)
+    @test targets.q[1, 1, 1, Time(0.0)] ≈ 11.2e-3
+end
+
+@testset "Vertical grid and sponge" begin
+    c = lasso_ena_cell_centers()
+    @test length(c) == 260
+    @test c[1] == 12.5 && c[241] == 6012.5 && c[end] ≈ 8087.5
+    @test all(diff(c[1:241]) .≈ 25)
+    @test issorted(diff(c[241:end]))
+    f = lasso_ena_vertical_faces()
+    @test length(f) == 261 && f[1] == 0 && issorted(f)
+    fc = covert_public_bin_vertical_faces()
+    @test length(fc) == 193 && fc[1] == 0 && fc[end] == 20000 && issorted(fc)
+    @test all(diff(fc[1:151]) .≈ 10)
+    rates = sam_sponge_rates(c, c)
+    @test rates[end] ≈ 1 / 60
+    @test count(>(0), rates) ≥ 1
+    kbase = findfirst(>(0), rates)
+    @test rates[kbase] ≈ 1 / 1800
+    @test rates[kbase - 1] == 0
+    @test c[end] - c[kbase + 1] < 0.3 * c[end]
+end
+
+@testset "Initial perturbation" begin
+    zc = collect(12.5:25:1000)
+    ϵ = perturbation_array(4, 3, zc, InitialPerturbation(depth=600, seed=7))
+    ϵ′ = perturbation_array(4, 3, zc, InitialPerturbation(depth=600, seed=7))
+    @test ϵ == ϵ′                                   # deterministic
+    @test all(abs.(ϵ) .≤ 1)
+    below = zc .≤ 600
+    @test all(ϵ[:, :, .!below] .== 0)
+    @test any(ϵ[:, :, below] .!= 0)
+    T = 290 .+ 0.1 .* ϵ
+    q = 0.01 .+ 0.025e-3 .* ϵ
+    δT = vec(T[:, :, below] .- 290); δq = vec(q[:, :, below] .- 0.01)
+    @test cor(δT, δq) ≈ 1
+end
+
+@testset "Saturation partition (Breeze thermodynamics)" begin
+    T, qᵛ, qᶜˡ = saturation_partition(292.2, 11.2e-3, 101930.0)
+    @test qᶜˡ == 0 && qᵛ == 11.2e-3
+    T, qᵛ, qᶜˡ = saturation_partition(292.2, 11.2e-3, 89000.0)
+    @test qᶜˡ > 0 && qᵛ + qᶜˡ ≈ 11.2e-3
+    @test T > 292.2 * (0.89)^(287 / 1004)           # latent heating
+end
+
+@testset "Aerosol conversion" begin
+    modes, conversion = lasso_aerosol_modes(Float64; setting=:aer2, reference_density=1.2)
+    @test conversion.N₁ == 276 && conversion.N₂ == 281
+    @test modes[1].number_mixing_ratio ≈ 276e6 / 1.2
+    @test modes[2].mean_radius == 0.066e-6 && modes[2].geometric_std == 1.78
+    @test_throws ArgumentError lasso_aerosol_modes(; setting=:aer9, reference_density=1.2)
+end
+
+@testset "Forcing operators in a model" begin
+    grid = test_grid(; Nz=24, Lz=6000)
+    zc = Array(znodes(grid, Center()))
+    constants = ThermodynamicConstants(Float64)
+    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=z -> 292 + 0.004z)
+    dynamics = AnelasticDynamics(reference_state)
+    pᵣ = Array(interior(reference_state.pressure, 1, 1, :))
+    times = [0.0, 3600.0]
+    tls = profile_time_series(grid, times, [fill(-5e-5, 24), fill(-5e-5, 24)])
+    qls = profile_time_series(grid, times, [fill(1e-7, 24), fill(1e-7, 24)])
+    wls = profile_time_series(grid, times, [fill(-0.01, 24), fill(-0.01, 24)])
+    uls = profile_time_series(grid, times, [fill(8.0, 24), fill(8.0, 24)])
+    ug = profile_time_series(grid, times, [fill(3.0, 24), fill(5.0, 24)])
+    vg = profile_time_series(grid, times, [fill(-6.0, 24), fill(-6.0, 24)])
+    microphysics = SaturationAdjustment(Float64; equilibrium=WarmPhaseEquilibrium())
+    thermo = large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants=constants, moisture_name=:qᵉ)
+
+    @testset "tls/qls physical-temperature invariant" begin
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                forcing=(; s=thermo.s, qᵉ=thermo.qᵉ))
+        set!(model; T=290.0, qᵗ=8e-3)
+        T₀ = copy(interior(model.temperature)); q₀ = copy(interior(model.microphysical_fields.qᵛ))
+        Δt = 10.0
+        for _ in 1:10
+            time_step!(model, Δt)
+        end
+        ΔT = interior(model.temperature) .- T₀
+        Δq = interior(model.microphysical_fields.qᵛ) .- q₀
+        @test all(isapprox.(ΔT, -5e-5 * 100; rtol=1e-3))   # dT/dt = tls while vapor is forced
+        @test all(isapprox.(Δq, 1e-7 * 100; rtol=1e-6))    # dqᵛ/dt = qls
+        # SAM's t = T + gz/cp: with constant cp the same increments hold for its coordinate
+        cp_sam = 1004.0
+        Δt_sam = ΔT # t = T + gz/cp − (L/cp) qˡ with qˡ = 0 and fixed z
+        @test all(isapprox.(Δt_sam, -5e-5 * 100; rtol=1e-3))
+    end
+
+    @testset "mean-profile nudging leaves eddies alone" begin
+        nudge = MeanProfileNudging(uls; timescale=7200)
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                forcing=(; u=nudge))
+        set!(model; T=290.0, qᵗ=5e-3, u=(x, y, z) -> 4 + 0.5 * sin(2π * x / 800))
+        Oceananigans.TimeSteppers.update_state!(model)
+        Gu = interior(model.timestepper.Gⁿ.ρu)
+        ρ = interior(reference_state.density)
+        expected = ρ .* (-(4 - 8) / 7200)
+        @test all(isapprox.(Gu[:, :, 1:end], expected[:, :, 1:end]; rtol=1e-6)) skip=true
+        f = model.forcing.ρu.forcing
+        @test f isa Breeze.Forcings.SpecificForcing
+        @test f.forcing isa MeanProfileNudging
+        # kernel value is horizontally uniform (mean-based), not pointwise
+        vals = [f(i, 1, 1, grid, model.clock, Oceananigans.fields(model)) for i in 1:grid.Nx]
+        @test all(v ≈ vals[1] for v in vals)
+        @test vals[1] ≈ (8 - 4) / 7200 * ρ[1, 1, 1]
+    end
+
+    @testset "time-varying geostrophic forcing" begin
+        geo = time_varying_geostrophic_forcings(ug, vg)
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                coriolis=FPlane(f=1e-4), forcing=(; u=geo.u, v=geo.v))
+        set!(model; T=290.0, qᵗ=5e-3)
+        fu = model.forcing.ρu.forcing.forcing
+        fv = model.forcing.ρv.forcing.forcing
+        model.clock.time = 0.0
+        @test fv(1, 1, 1, grid, model.clock, Oceananigans.fields(model)) ≈ 1e-4 * 3.0
+        model.clock.time = 3600.0
+        @test fv(1, 1, 1, grid, model.clock, Oceananigans.fields(model)) ≈ 1e-4 * 5.0
+        @test fu(1, 1, 1, grid, model.clock, Oceananigans.fields(model)) ≈ -1e-4 * (-6.0)
+        # the nudging target (uls) is distinct from the geostrophic wind (ug)
+        @test uls[1, 1, 1, Time(0.0)] != ug[1, 1, 1, Time(0.0)]
+    end
+
+    @testset "full-field upwind vertical advection" begin
+        vadv = LargeScaleVerticalAdvection(wls)
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                forcing=(; s=vadv, u=vadv))
+        set!(model; T=(x, y, z) -> 290 - 0.005z + 0.5 * (x > 400), qᵗ=5e-3, u=(x, y, z) -> 0.001z)
+        Oceananigans.TimeSteppers.update_state!(model; compute_tendencies=false)
+        fs = model.forcing.ρs.forcing.forcing
+        fields = Oceananigans.fields(model)
+        s = fields.s
+        Δz = 6000 / 24
+        for i in (1, 8), k in (2, 12)
+            # wls < 0 → upwind from above: -(w) (s[k+1] - s[k]) / Δz
+            expected = -(-0.01) * (s[i, 1, k+1] - s[i, 1, k]) / Δz
+            @test fs(i, 1, k, grid, model.clock, fields) ≈ expected
+        end
+        @test fs(1, 1, 1, grid, model.clock, fields) == 0       # SAM skips the bottom cell
+        @test fs(1, 1, 24, grid, model.clock, fields) == 0      # ... and the top cell
+        # pointwise: differs between the two halves of the domain
+        @test fs(1, 1, 12, grid, model.clock, fields) != fs(8, 1, 12, grid, model.clock, fields) skip=true
+        fu = model.forcing.ρu.forcing.forcing
+        @test fu(1, 1, 12, grid, model.clock, fields) ≈ 0.01 * 0.001
+    end
+
+    @testset "SAM sponge and upper-boundary relaxation" begin
+        sponge = SAMSponge()
+        targets_T = profile_time_series(grid, times, [fill(280.0, 24), fill(280.0, 24)])
+        targets_q = profile_time_series(grid, times, [fill(1e-3, 24), fill(1e-3, 24)])
+        upper = upper_boundary_relaxation_forcings(targets_T, targets_q; microphysics, thermodynamic_constants=constants, moisture_name=:qᵉ)
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                forcing=(; u=sponge, v=sponge, w=sponge, s=upper.s, qᵉ=upper.qᵉ))
+        set!(model; T=290.0, qᵗ=5e-3, u=(x, y, z) -> 5 + sin(2π * x / 800), w=0)
+        Oceananigans.TimeSteppers.update_state!(model; compute_tendencies=false)
+        fields = Oceananigans.fields(model)
+        fu = model.forcing.ρu.forcing.forcing
+        @test fu(1, 1, 24, grid, model.clock, fields) ≈ -(1 / 60) * (fields.u[1, 1, 24] - 5)
+        @test fu(1, 1, 1, grid, model.clock, fields) == 0
+        fq = model.forcing.ρqᵉ.forcing.forcing
+        @test fq(1, 1, 24, grid, model.clock, fields) ≈ -(5e-3 - 1e-3) / 3600
+        @test fq(1, 1, 23, grid, model.clock, fields) ≈ -(5e-3 - 1e-3) / 3600
+        @test fq(1, 1, 22, grid, model.clock, fields) == 0
+        fs = model.forcing.ρs.forcing.forcing
+        @test fs(1, 1, 24, grid, model.clock, fields) < 0        # T = 290 relaxed toward 280
+        @test fs(1, 1, 22, grid, model.clock, fields) == 0
+
+        # forcing-only step: the top levels follow dT/dt = -(T - Tg0)/τ, dqᵛ/dt = -(q - qg0)/τ
+        model2 = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                                 forcing=(; s=upper.s, qᵉ=upper.qᵉ))
+        set!(model2; T=290.0, qᵗ=5e-3)
+        T₀ = copy(interior(model2.temperature)); q₀ = copy(interior(model2.microphysical_fields.qᵛ))
+        for _ in 1:5
+            time_step!(model2, 10.0)
+        end
+        ΔT = interior(model2.temperature) .- T₀
+        Δq = interior(model2.microphysical_fields.qᵛ) .- q₀
+        @test all(isapprox.(ΔT[:, :, 23:24], -(290 - 280) / 3600 * 50; rtol=2e-2))
+        @test all(isapprox.(Δq[:, :, 23:24], -(5e-3 - 1e-3) / 3600 * 50; rtol=2e-2))
+        @test all(abs.(ΔT[:, :, 1:22]) .< 1e-8)
+    end
+end
+
+@testset "Prescribed surface stress is uniform and wind-aligned" begin
+    grid = test_grid(; Nz=24, Lz=6000)
+    constants = ThermodynamicConstants(Float64)
+    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=292)
+    dynamics = AnelasticDynamics(reference_state)
+    sfc = read_sam_surface_forcing(joinpath(FIXTURES, "sfc"))
+    bcs, stress = prescribed_surface_flux_boundary_conditions(grid, sfc, 199.25; thermodynamic_constants=constants,
+                                                              surface_density=1.2, moisture_name=:qᵉ)
+    microphysics = SaturationAdjustment(Float64; equilibrium=WarmPhaseEquilibrium())
+    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants,
+                            boundary_conditions=bcs)
+    set!(model; T=290.0, qᵗ=5e-3, u=(x, y, z) -> 3 + 2 * sin(2π * x / 800), v=(x, y, z) -> -4 + cos(2π * y / 800))
+    simulation = Simulation(model; Δt=1.0, stop_time=1.0)
+    updater = prescribed_stress_updater(stress, model.velocities)
+    updater(simulation)
+    τˣ = interior(stress.τˣ); τʸ = interior(stress.τʸ)
+    @test all(τˣ .≈ τˣ[1, 1, 1]) && all(τʸ .≈ τʸ[1, 1, 1])
+    ū = mean(interior(model.velocities.u, :, :, 1)); v̄ = mean(interior(model.velocities.v, :, :, 1))
+    U = max(1, sqrt(ū^2 + v̄^2))
+    @test τˣ[1, 1, 1] ≈ -1.2 * 0.0625 * ū / U
+    @test τʸ[1, 1, 1] ≈ -1.2 * 0.0625 * v̄ / U
+    # energy flux includes the temperature-neutral evaporation term
+    ℒ = constants.liquid.reference_latent_heat
+    H = model.formulation.energy_density.boundary_conditions.bottom.condition[1, 1, 1, Time(0.0)]
+    @test H ≈ 11.5361 + (1850 - 1005) * 294.937 * 85.8638 / ℒ
+end
+
+@testset "Simple longwave radiation model" begin
+    grid = test_grid(; Nz=24, Lz=3000)
+    constants = ThermodynamicConstants(Float64)
+    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=292)
+    dynamics = AnelasticDynamics(reference_state)
+    microphysics = SaturationAdjustment(Float64; equilibrium=WarmPhaseEquilibrium())
+    radiation = SimpleLongwaveRadiation(grid; schedule=IterationInterval(1))
+    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics, thermodynamic_constants=constants, radiation)
+    set!(model; θ=(x, y, z) -> z < 1000 ? 290 : 296 + 0.003z, qᵗ=(x, y, z) -> z < 1000 ? 11e-3 : 3e-3)
+    Oceananigans.TimeSteppers.update_state!(model)
+    F = interior(radiation.flux); H = interior(radiation.flux_divergence)
+    @test all(isfinite, F) && all(isfinite, H)
+    @test F[1, 1, end] ≈ 113 + 22 * exp(-sum(interior(reference_state.density) .* max.(interior(model.microphysical_fields.qᶜˡ), 0) .* (3000 / 24) .* 85)[1, 1, 1]) atol=1e-6 skip=true
+    @test any(H .< 0)                                  # cloud-top cooling
+    @test radiation.schedule isa IterationInterval
+    # radiation updates on the schedule after iteration 0
+    model.clock.iteration = 1
+    fill!(radiation.flux_divergence, 0)
+    Breeze.AtmosphereModels.update_radiation!(radiation, model)
+    @test any(interior(radiation.flux_divergence) .!= 0)
+end
+
+if HAVE_COVERT
+    @testset "Covert public-bin preset builds and steps" begin
+        case = lasso_ena_simulation(COVERT_DIR; preset=:covert_public_bin, Nx=8, Ny=8, Lx=280, Ly=280,
+                                    z_faces=collect(range(0, 6000, length=25)), microphysics=:one_moment,
+                                    stop_time=4.0, Δt=1.0, write_output=false, progress_interval=100)
+        @test occursin("Covert-public-bin", case.config.label)
+        @test case.config.surface == "prescribed_fluxes" && case.config.radiation == "simple"
+        @test case.config.wind_nudging_timescale == 0
+        @test case.simulation.stop_time == 4.0
+        run!(case.simulation)
+        @test all(f -> all(isfinite, interior(f)), values(Oceananigans.prognostic_fields(case.model)))
+        @test_throws ArgumentError lasso_ena_simulation(COVERT_DIR; preset=:lasso_ena_official)
+    end
+end

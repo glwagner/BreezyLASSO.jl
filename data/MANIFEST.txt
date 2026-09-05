@@ -1,0 +1,15 @@
+
+[covert2022_bulk]
+url = "https://github.com/dmechem/ENA_variability_LES_bulk_paper.git"
+commit = "a403498ff44045b531af5dbfe2ee461a9c878dd9"
+snd = "snd"  # sha256 bda8b10398abcd7119de7496ccd138bb5e0092ece01ab89150a64aef554d54cd
+lsf = "lsf_time_varying"  # sha256 aaeddf65a1a57ff0b87fcefd41f5d33627f6d968ce548d9f23f8901f5080525c
+sfc = "sfc_time_varying"  # sha256 7a158d2d119eca4c3d7d6f4b96ca4eac524ad862d580a213caeb9af72d787b8a
+
+[covert2022_bin]
+url = "https://github.com/dmechem/ENA_variability_LES_bin_paper.git"
+commit = "07958e6e53543763a2e2d8faf1ea09433c1086c0"
+snd = "snd"  # sha256 58156cb504d7f9ceb1da199c3b47d2735a3c558fa67c1def0756c6a9be1daee4
+lsf = "lsf"  # sha256 aaeddf65a1a57ff0b87fcefd41f5d33627f6d968ce548d9f23f8901f5080525c
+sfc = "sfc"  # sha256 7a158d2d119eca4c3d7d6f4b96ca4eac524ad862d580a213caeb9af72d787b8a
+prm = "prm"  # sha256 a8923d8d21f3bf9f8c844c6f131237ef7868b4b8620123f334251b7d3d6eed3d

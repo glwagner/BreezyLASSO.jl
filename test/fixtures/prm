@@ -1,0 +1,15 @@
+ &PARAMETERS
+ caseid ='16x16x24',
+ LES = .true., OCEAN = .true.,
+ dosgs = .true., dodamping = .true., doupperbound = .true.,
+ doradsimple = .true., dolongwave = .true., doshortwave = .false.,
+ dosurface = .true., dolargescale = .true., dosfcforcing = .true., docoriolis = .true.,
+ donudging_uv = .false., donudging_tq = .false.,
+ tauls = 10800.0, ! comment with = sign inside
+ SFC_FLX_FXD = .true., SFC_TAU_FXD = .true.,
+ latitude0 = 39.05, longitude0 = -28.01,
+ nrad = 1, ug = 5.0d0, vg = -8.0D0,
+ dx = 35., dy = 35., dt = 0.5,
+ day0=199.25,
+ nstop = 43200,
+/

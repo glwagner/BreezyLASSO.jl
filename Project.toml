@@ -1,0 +1,42 @@
+name = "BreezyLASSO"
+uuid = "6c1c1c8e-9c4d-4f2b-8f5e-2a7d0a3b1e11"
+authors = ["Gregory L. Wagner <greg@aeolus.earth>"]
+version = "0.1.0"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+Breeze = "660aa2fb-d4c8-4359-a52c-9c057bc511da"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+ClimaComms = "3a4d1b5c-c61d-41fd-a00a-5873ba7a1b0d"
+CloudMicrophysics = "6a9e3e04-43cd-43ba-94b9-e8782df3c71b"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+Oceananigans = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+RRTMGP = "a01a1ee8-cea4-48fc-987c-fc7878d79da1"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[sources]
+Breeze = {url = "https://github.com/NumericalEarth/Breeze.jl", rev = "0f4ffac"}
+
+[compat]
+Breeze = "0.10"
+CUDA = "5.9, 6"
+CairoMakie = "0.15, 0.16"
+CloudMicrophysics = "0.38, 0.39"
+JLD2 = "0.5, 0.6"
+NCDatasets = "0.14"
+Oceananigans = "0.111"
+RRTMGP = "0.22, 0.23, 1"
+julia = "1.11"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

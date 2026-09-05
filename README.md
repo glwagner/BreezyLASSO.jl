@@ -1,0 +1,108 @@
+# BreezyLASSO.jl
+
+Reproducing the LASSO-ENA large-eddy-simulation protocol with [Breeze.jl](https://github.com/NumericalEarth/Breeze.jl)
+for the closed-cell stratocumulus case of **18 July 2017** at the ARM Eastern North Atlantic site.
+
+> **Status (5 September 2026).** The official LASSO-ENA `samin` archive (restricted; free ARM
+> account) is not yet in the workspace. Every run reported here is driven by the *public*
+> Covert, Mechem & Zhang (2022) SAM input files and is labelled a **Covert-public-bin
+> development benchmark**, not an official LASSO-ENA reproduction. The official preset
+> (`:lasso_ena_official`) is implemented and refuses to run without the archive.
+
+## What is implemented
+
+The LASSO SAM protocol was taken from the official custom source
+(`https://code.arm.gov/lasso/lasso-ena-codes/lasso_sam_sbm.git`, branch `lasso_ena_noice`,
+commit `12d02446a2147388dc89d828e6e0553106abea0f`, 2025-10-24), file by file:
+
+| SAM component (file) | BreezyLASSO implementation |
+|---|---|
+| `snd`/`lsf`/`sfc`/`prm`/`grd` readers (`setforcing.f90`, `setdata.f90`) | `read_sam_*` in `src/sam_input_files.jl`: pressure- or height-coordinate records, 7- or 9-column `lsf` (optional `ug`/`vg`), Fortran namelist parser, SAM hydrostatic heights |
+| Interpolation to the model levels (`forcing.f90`) | `sam_interpolate_column`: linear in pressure for pressure-coordinate records against the reference pressure, linear in height otherwise; above the record top `tls = qls = wls = 0`, winds hold |
+| Geostrophic wind `ug0/vg0` in `coriolis.f90` | `TimeVaryingGeostrophicForcing` (a `FieldTimeSeries`, distinct from the nudging target) |
+| Domain-mean wind nudging to `ul0/vl0` (`nudging.f90`, n0, `tauls`) | `MeanProfileNudging` (horizontal mean, not pointwise `Relaxation`) |
+| Full-field upwind `-wls ∂zϕ` on u, v, t, vapor and every microphysical field (`subsidence.f90`) | `LargeScaleVerticalAdvection` (same object under every specific key; bottom/top cells skipped as in SAM) |
+| `tls` added to `t = T + gz/cp - Lv qˡ/cp`, `qls` to vapor (`forcing.f90`, constant `cp = 1004`) | `large_scale_thermodynamic_forcings`: `ds/dt = cᵖᵐ(q) tls + (cᵖᵛ - cᵖᵈ) T qls` so that `dT/dt = tls` and `dqᵛ/dt = qls` hold in Breeze's `s = cᵖᵐ T + gz - ℒqˡ` (physical-temperature invariant; step-tested) |
+| Upper sponge on `u - ū`, `v - v̄`, `w` (`damping.f90`) | `SAMSponge`: top 30 %, `τ` geometric from 1800 s to 60 s |
+| Top-two-level relaxation of `t`, vapor toward the sounding (`upperbound.f90`) | `upper_boundary_relaxation_forcings`, `τ = 3600 s` |
+| Prescribed H/LE/τ, stress along the domain-mean lowest-level wind (`surface.f90`, `SFC_FLX_FXD`, `SFC_TAU_FXD`) | `prescribed_surface_flux_boundary_conditions` + `PrescribedStressUpdater`; energy flux `H + (cᵖᵛ - cᵖᵈ) SST E` keeps evaporation temperature-neutral |
+| Bulk fluxes from SST (`oceflx.f90`, LASSO `flxsst`) | `bulk_surface_flux_boundary_conditions`: Breeze `PolynomialCoefficient` (Large & Yeager neutral law, identical to `oceflx`'s) with Li et al. (2010) stability; shared SST field also feeds radiation |
+| `rad_simple.f90` (F₀ = 113, F₁ = 22 W m⁻², κ = 85, no free-troposphere term) | `SimpleLongwaveRadiation` radiation model (legacy Covert-era control; `:dycoms` variant restores Stevens et al. 2005) |
+| RRTMG LW+SW (official protocol) | Breeze RRTMGP all-sky (`AllSkyOptics`) at the ENA position and date, prescribed effective radii (10 μm liquid, 30 μm ice) |
+| HUJI-SBM two-mode aerosol (`aer1/2/3`) | P3 `AerosolActivation` with the LASSO radii/widths; cm⁻³ → kg⁻¹ using the surface density and a constant mixing ratio with height (`FCCN0 = FCCNR_mp ρ(z)/ρ(0)`); `DiagnosticCCNProjection` reproduces the `diagCCN` reservoir rule |
+| `setperturb.f90` case 5 (±0.1 K, ±0.025 g kg⁻¹ below 600 m, one draw per cell) | `perturbation_array`: one deterministic host array reused for T and vapor |
+
+Microphysics is staged as **1M-control → P3-N75 → P3-aer2** (`microphysics = :one_moment`,
+`:p3_n75`, `:p3_aer2`), all using the complete P3 implementation on Breeze `origin/main`.
+
+### Breeze fix required for P3-aer2
+
+The prognostic-aerosol P3 configuration produced `NaN` in `ρnᶜˡ` after 8–9 steps in every
+configuration (with or without forcing, either initialization, any Δt): advection and
+sedimentation leave positive but subnormal cloud mass in cloud-free cells while the DSD
+diagnosis floors the droplet number above zero, so `Nᶜˡ / (ρ qᶜˡ)` overflows to `Inf` and
+`Inf × 0 = NaN` enters the number tendency. The generic fix (threshold the quotient at
+`minimum_mass_mixing_ratio`, plus a Float32/Float64 regression test) lives on the Breeze
+branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins.
+
+## Layout
+
+```
+src/            package (readers, grids, forcings, radiation, surface, initial state, case driver, diagnostics)
+scripts/        fetch_inputs.jl, run_case.jl, smoke_tests.jl, Slurm submit scripts
+test/           unit + regression tests (synthetic fixtures; Covert files used when present)
+analysis/       plot_results.jl (separate environment)
+data/           inputs (not versioned except README and MANIFEST)
+results/        figures and lightweight summaries committed from runs
+```
+
+## Running
+
+```julia
+julia --project -e 'using Pkg; Pkg.instantiate()'
+julia --project scripts/fetch_inputs.jl                # public Covert files + checksums
+julia --project -e 'using Pkg; Pkg.test()'
+julia --project scripts/smoke_tests.jl cpu             # staged smoke tests
+sbatch scripts/smoke_tests_gpu.sbatch                  # same on one GPU
+sbatch scripts/submit_gpu.sbatch --preset covert_public_bin --microphysics p3_n75 --Nx 256 --Ny 256
+```
+
+Every run writes `provenance.toml` (input checksums, Breeze/Oceananigans versions, LASSO SAM
+reference commit, and the full configuration record, including the preset label and any
+overrides).
+
+## Presets
+
+- `:covert_public_bin` — exactly the runnable configuration of the public bin-paper
+  repository namelist: `256x256x192` at 35 m (8.96 km), `day0 = 199.25`, `nstop × dt = 6 h`,
+  prescribed fluxes, `rad_simple` longwave only, no wind nudging, `doupperbound`, `dodamping`.
+  The published Covert et al. (2022) run (864² × 192 at 35 m, 30.24 km, 06–15 UTC) is a
+  different, not directly runnable target. The 192-level vertical grid is a labelled
+  reconstruction (the repository does not ship its `grd`).
+- `:lasso_ena_official` — needs `snd`, `lsf`, `sfc`, `prm`, `grd` from the `samin` bundle;
+  bulk SST fluxes, RRTMGP, `tauls` nudging, `nrad` radiation cadence, P3-aer2 with the
+  `diagCCN` projection, 24 h. Missing files or namelist switches raise an error.
+
+## Known model-form differences (documented, not hidden)
+
+- SGS: Smagorinsky–Lilly instead of SAM's 1.5-order TKE; advection: WENO instead of MPDATA.
+- P3 versus HUJI-SBM/Morrison: no bin spectra; the SBM initializes condensate-free with
+  `qᵗ = q0` (the default `p3_initialization = :condensate_free` mirrors that; `:equilibrium` is
+  a labelled alternative that starts from the 1M control's saturation partition).
+- RRTMGP columns end at the 8.09 km model top (no patched upper atmosphere); effective radii
+  are prescribed, not diagnosed from P3.
+- Breeze uses `s = cᵖᵐ(q) T + gz − ℒqˡ` with variable heat capacity where SAM uses `cp = 1004`;
+  the forcing and surface-flux adapters keep the physical temperature response identical.
+- Below-surface sounding levels are interpolated through (as SAM does; `exclude_subsurface_levels`
+  is an explicit sensitivity).
+
+## Results
+
+See `results/README.md` (updated with each committed run).
+
+## References
+
+- LASSO-ENA documentation: <https://lasso-ena.svcs.arm.gov/latest/>
+- Covert, Mechem & Zhang (2022), ACP 22, 1159, doi:10.5194/acp-22-1159-2022; inputs at
+  <https://github.com/dmechem/ENA_variability_LES_bulk_paper> and `..._bin_paper`
+- Stevens et al. (2005), MWR 133, 1443 (DYCOMS-II RF01 simple radiation)

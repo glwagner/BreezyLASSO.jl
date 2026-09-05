@@ -1,0 +1,18 @@
+# Data (downloaded by scripts/fetch_inputs.jl; never commit ARM-restricted archives)
+data/*
+!data/README.md
+!data/MANIFEST.txt
+!data/fixtures/
+# Simulation output and Slurm logs
+output/
+*.jld2
+*.nc
+slurm-*.out
+*.out
+*.err
+# Julia
+Manifest-v*.toml
+.CondaPkg/
+# Scratch
+*.swp
+.DS_Store
