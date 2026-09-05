@@ -38,7 +38,7 @@ function first_bad(model)
 end
 # Water budget: domain-integrated water mass versus the surface vapor flux in and rain flux out
 grid_ = model.grid
-Δz_ = Array(zspacings(grid_, Center())); Δx_ = grid_.Lx / grid_.Nx; Δy_ = grid_.Ly / grid_.Ny
+Δz_ = diff(Array(znodes(grid_, Face()))); Δx_ = grid_.Lx / grid_.Nx; Δy_ = grid_.Ly / grid_.Ny
 ρ_ = Array(interior(model.dynamics.reference_state.density, 1, 1, :))
 ρΔV_ = reshape(ρ_ .* Δz_ .* (Δx_ * Δy_), 1, 1, :)
 water_mass(m) = sum(Array(interior(m.microphysical_fields.qᵛ)) .* ρΔV_) + sum(Array(interior(m.microphysical_fields.qᶜˡ)) .* ρΔV_) + sum(Array(interior(m.microphysical_fields.qʳ)) .* ρΔV_)
