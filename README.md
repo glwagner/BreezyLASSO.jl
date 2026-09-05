@@ -65,7 +65,7 @@ WENO (the plain residual is the explicit-Euler outflow estimate's own error).
 
 The production configuration nevertheless follows Breeze's `examples/rico.jl`: every
 microphysical water-mass tracer (vapor and all condensate masses, P3 included) is advected
-with bounds-preserving WENO, the static energy and the number/volume moments with plain WENO
+with bounds-preserving WENO, the number/volume moments with its positivity-only form, and the static energy with plain WENO
 (`scalar_advection_schemes`; `bounded_condensate_advection = false` is a diagnostic
 sensitivity only, recorded in provenance). The limiter path itself is the thing to fix:
 Oceananigans `main` (post-0.111, commit `67a2204`) stores the limiter factor per cell and
@@ -111,10 +111,15 @@ fall at 9.3 m s⁻¹ and the number at 5.4 m s⁻¹ — a sedimentation Courant 
 surface cell the number spike makes P3 diagnose micron drops whose number fall speed
 (0.006 m s⁻¹) no longer removes it, the plain (unlimited) WENO number advection plus the
 negative-number clamp then grow the spike by ~8 % per step, and P3's DSD-consistency
-relaxation (−n/10 s) cannot hold it. The remedy under test is a positivity-only limiter for
-the number and volume moments (`moment_advection = :positive`, `WENO(bounds = (0, ∞))`,
-recorded in provenance); the production P3 members otherwise run on the 260-level LASSO
-grid, where the sedimentation Courant number stays inside the limiter's guarantee.
+relaxation (−n/10 s) cannot hold it. The fix is a positivity-only limiter for the number and
+volume moments (`moment_advection = :positive`, i.e. `WENO(bounds = (0, ∞))`, now the
+default and recorded in provenance): with it the same 32² Covert-grid probe ran 45 minutes
+with the rain number never above 1.7×10⁵ m⁻³ (job 868), where the unlimited scheme reached
+10¹⁸ and diverged. Plain WENO for the moments is kept as the labelled sensitivity
+`moment_advection = :plain`. The P3 production members are run on both grids with the
+limiter; on the 260-level LASSO grid the sedimentation Courant number also stays inside the
+limiter's guarantee (P3-N75 at full 256² scale ran its first hour there cleanly before the
+fix, job 865).
 
 ### Breeze fix required for P3-aer2
 
@@ -173,7 +178,7 @@ mode, translation frame, aerosol chemistry, and any overrides).
 - `:covert_public_bin` — exactly the runnable configuration of the public bin-paper
   repository namelist: `256x256x192` at 35 m (8.96 km), `day0 = 199.25`, `nstop × dt = 6 h`,
   prescribed fluxes, `rad_simple` longwave only, no wind nudging, `doupperbound`, `dodamping`.
-- All water-mass tracers (vapor and every condensate mass, P3 included) use bounds-preserving WENO; number and volume moments and static energy use plain WENO (see the limiter note above).
+- All water-mass tracers (vapor and every condensate mass, P3 included) use bounds-preserving WENO with bounds (0, 1); number and volume moments use the same limiter with bounds (0, ∞) (positivity only); static energy uses plain WENO (see the limiter notes above).
   different, not directly runnable target. The 192-level vertical grid is a labelled
   reconstruction (the repository does not ship its `grd`).
 - `:lasso_ena_official` — needs `snd`, `lsf`, `sfc`, `prm`, `grd` from the `samin` bundle;

@@ -31,7 +31,8 @@ get(ENV, "PROBE_MOMENTS", "plain") == "positive" && (switches[:moment_advection]
 scheme === :p3_aer2 && !endswith(scheme_arg, "_noproj") && (switches[:aerosol_replenishment] = :diagnostic_ccn)
 println("off switches: ", off, "  scheme: ", scheme_arg)
 
-case = lasso_ena_simulation(data; preset=:covert_public_bin, arch, FT, Nx=32, Ny=32, Lx=1120, Ly=1120,
+probe_N = parse(Int, get(ENV, "PROBE_NX", "32"))
+case = lasso_ena_simulation(data; preset=:covert_public_bin, arch, FT, Nx=probe_N, Ny=probe_N, Lx=35probe_N, Ly=35probe_N,
                             z_faces=(get(ENV, "PROBE_GRID", "lasso") == "covert" ? covert_public_bin_vertical_faces() : lasso_ena_vertical_faces()), microphysics=scheme, stop_time=minutes*60,
                             Δt=min(1.0, max_Δt), max_Δt, write_output=false, progress_interval=1minute, switches...)
 model = case.model

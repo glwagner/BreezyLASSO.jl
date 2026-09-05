@@ -441,27 +441,27 @@ end
         for name in keys(schemes)
             name === :ρs && continue
             s = string(name)
+            @test is_bounded(schemes[name])
             if occursin("ρq", s)
-                @test is_bounded(schemes[name])   # every water-mass tracer
+                @test schemes[name].bounds.maximum_value == 1        # every water-mass tracer
             else
-                @test !is_bounded(schemes[name])  # number (ρn*) and volume (ρb*) moments
+                @test isinf(schemes[name].bounds.maximum_value)     # number (ρn*) and volume (ρb*) moments
             end
+            @test schemes[name].bounds.minimum_value == 0
         end
-        # diagnostic sensitivity: plain WENO for the condensate masses only
-        plain = BreezyLASSO.scalar_advection_schemes(5, microphysics, moisture; bounded_condensates=false)
+        # diagnostic sensitivities: plain WENO for the condensate masses, or for the moments
+        plain = BreezyLASSO.scalar_advection_schemes(5, microphysics, moisture; bounded_condensates=false, positive_moments=false)
         @test is_bounded(plain[Symbol("ρ", moisture)])
         @test all(!is_bounded(plain[n]) for n in keys(plain) if n != Symbol("ρ", moisture))
     end
     aer2, _ = BreezyLASSO.build_microphysics(Float64, :p3_aer2; droplet_number=75e6, surface_density=1.17)
     schemes = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ)
-    @test all(is_bounded, (schemes.ρqᶜˡ, schemes.ρqʳ, schemes.ρqⁱ, schemes.ρqᶠ, schemes.ρqʷⁱ))
-    @test all(!is_bounded, (schemes.ρnᶜˡ, schemes.ρnʳ, schemes.ρnⁱ, schemes.ρbᶠ, schemes.ρnᵃ))
-    # positivity-only limiter for the moments: lower bound 0, no upper bound
-    positive = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ; positive_moments=true)
-    @test all(is_bounded, (positive.ρnᶜˡ, positive.ρnʳ, positive.ρnⁱ, positive.ρbᶠ, positive.ρnᵃ))
-    @test positive.ρnʳ.bounds.minimum_value == 0 && isinf(positive.ρnʳ.bounds.maximum_value)
-    @test positive.ρqʳ.bounds.maximum_value == 1
-    @test !is_bounded(positive.ρs)
+    @test all(s -> is_bounded(s) && s.bounds.maximum_value == 1, (schemes.ρqᶜˡ, schemes.ρqʳ, schemes.ρqⁱ, schemes.ρqᶠ, schemes.ρqʷⁱ))
+    @test all(s -> is_bounded(s) && isinf(s.bounds.maximum_value), (schemes.ρnᶜˡ, schemes.ρnʳ, schemes.ρnⁱ, schemes.ρbᶠ, schemes.ρnᵃ))
+    @test !is_bounded(schemes.ρs)
+    plain_moments = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ; positive_moments=false)
+    @test all(!is_bounded, (plain_moments.ρnᶜˡ, plain_moments.ρnʳ, plain_moments.ρnⁱ, plain_moments.ρbᶠ, plain_moments.ρnᵃ))
+    @test is_bounded(plain_moments.ρqʳ)
 end
 
 @testset "Sedimenting rain carries its enthalpy" begin

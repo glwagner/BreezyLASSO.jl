@@ -95,13 +95,17 @@ end
 is_p3(microphysics) = microphysics isa Breeze.Microphysics.PredictedParticleProperties.PredictedParticlePropertiesMicrophysics
 
 """
-    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true)
+    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true)
 
 Advection scheme per prognostic scalar, following Breeze's `examples/rico.jl`: the static
 energy uses plain WENO; every microphysical *water-mass* tracer (the vapor / equilibrium
 moisture and all condensate masses `ρq*`) uses bounds-preserving WENO with bounds `(0, 1)`;
 dimensional number and volume moments (`ρn*`, `ρb*`), whose magnitudes are not bounded by
-one, use plain WENO (P3's `SpeciesBorrowing` clamps their negative undershoots).
+one, use the same limiter with bounds `(0, ∞)`, i.e. positivity only. Plain WENO for the
+moments (`positive_moments = false`, with P3's `SpeciesBorrowing` clamping the negative
+undershoots afterwards) let the rain number in the 10-m surface cells of the Covert grid
+grow by ~8 % per step once P3 had diagnosed micron drops there (see the README); the
+positivity limiter holds it at physical values.
 
 Known issue (documented, tracked): the bounds-preserving WENO of the pinned Oceananigans
 limits only the upwind reconstruction of the evaluating cell, so the two cells sharing a
@@ -109,12 +113,12 @@ face can apply different fluxes when its limiter fires and mass is not conserved
 P3's fast sedimentation this piled phantom rain into the surface cell of the 45-minute
 GPU probes (surface `qʳ` reached 9.5 g kg⁻¹, versus < 0.03 g kg⁻¹ with plain WENO), and the
 forcing-free rain-shaft budget in `scripts/mass_budget_probe.jl` records the residual.
-Oceananigans `main` stores the limiter as a cell field and rescales every face
-reconstruction with its own cell's factor, which restores conservation; that path is being
-validated in an isolated environment. `bounded_condensates = false` (plain WENO for the
+Oceananigans `main` (pinned since the `glw/weno-z-float32-overflow` revision) stores the limiter as a cell field and rescales every face
+reconstruction with its own cell's factor, which restores conservation (validated by
+`scripts/mass_budget_probe.jl` and the GPU smokes). `bounded_condensates = false` (plain WENO for the
 condensate masses) is retained as a diagnostic sensitivity only.
 """
-function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=false)
+function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true)
     weno = WENO(; order)
     bounded = WENO(; order, bounds=(0, 1))
     # Number and volume moments are not bounded by one, so their limiter only enforces
@@ -206,7 +210,7 @@ function build_case(data_dir;
                               aerosol_replenishment = nothing,
                               sedimentation_enthalpy = true,
                               bounded_condensate_advection = nothing,
-                              moment_advection = :plain,
+                              moment_advection = :positive,
                               label = "unlabeled",
                               output_dir = "output",
                               output_prefix = "lasso_ena",
