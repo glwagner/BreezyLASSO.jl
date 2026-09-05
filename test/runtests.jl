@@ -430,6 +430,34 @@ end
     @test H ≈ 11.5361 + (1850 - 1005) * 294.937 * 85.8638 / ℒ
 end
 
+@testset "Scalar advection: bounded water masses, plain energy and moments" begin
+    using Oceananigans.Advection: BoundsPreservingWENO
+    is_bounded(scheme) = scheme isa BoundsPreservingWENO
+    for (scheme, moisture) in ((:p3_aer2, :qᵛ), (:p3_n75, :qᵛ), (:one_moment, :qᵗ))
+        microphysics, _ = BreezyLASSO.build_microphysics(Float64, scheme; droplet_number=75e6, surface_density=1.17)
+        schemes = BreezyLASSO.scalar_advection_schemes(5, microphysics, moisture)
+        @test !is_bounded(schemes.ρs)
+        @test is_bounded(schemes[Symbol("ρ", moisture)])
+        for name in keys(schemes)
+            name === :ρs && continue
+            s = string(name)
+            if occursin("ρq", s)
+                @test is_bounded(schemes[name])   # every water-mass tracer
+            else
+                @test !is_bounded(schemes[name])  # number (ρn*) and volume (ρb*) moments
+            end
+        end
+        # diagnostic sensitivity: plain WENO for the condensate masses only
+        plain = BreezyLASSO.scalar_advection_schemes(5, microphysics, moisture; bounded_condensates=false)
+        @test is_bounded(plain[Symbol("ρ", moisture)])
+        @test all(!is_bounded(plain[n]) for n in keys(plain) if n != Symbol("ρ", moisture))
+    end
+    aer2, _ = BreezyLASSO.build_microphysics(Float64, :p3_aer2; droplet_number=75e6, surface_density=1.17)
+    schemes = BreezyLASSO.scalar_advection_schemes(5, aer2, :qᵛ)
+    @test all(is_bounded, (schemes.ρqᶜˡ, schemes.ρqʳ, schemes.ρqⁱ, schemes.ρqᶠ, schemes.ρqʷⁱ))
+    @test all(!is_bounded, (schemes.ρnᶜˡ, schemes.ρnʳ, schemes.ρnⁱ, schemes.ρbᶠ, schemes.ρnᵃ))
+end
+
 @testset "Sedimenting rain carries its enthalpy" begin
     using Breeze.Thermodynamics: saturation_specific_humidity, PlanarLiquidSurface
     using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
