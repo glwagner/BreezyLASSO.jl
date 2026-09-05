@@ -121,6 +121,23 @@ limiter; on the 260-level LASSO grid the sedimentation Courant number also stays
 limiter's guarantee (P3-N75 at full 256² scale ran its first hour there cleanly before the
 fix, job 865).
 
+### The limiter's 0/0 corner at the lower bound (second Oceananigans fix)
+
+With the positivity limiter, the full 256² Covert-grid P3-N75 run still went non-finite at
+iteration 105 (52 s), in two cells at cloud top, while the same configuration at 32² ran
+45 minutes. The per-stage trace (`scripts/p3_stage_trace_gpu.jl`, restoring the exact
+pre-stage state and recomputing every term) showed the rain-number advection tendency NaN
+with finite P3 rates, and the limiter factor θ NaN in one cell whose rain number is exactly
+zero below a decaying tail of ε₂-multiples (2×10⁻¹⁹, 4.7×10⁻²⁹, 0, …): its minimum
+reconstruction is exactly −ε₂ = 0.3 × (−1/6) × 2×10⁻¹⁹, so `θᵐⁱⁿ = |(0 − 0)/(m − cᵢ + ε₂)|`
+is 0/0 — reproduced bit for bit on the CPU. Because m − cᵢ ≤ 0 by construction, the
+regularization belongs on the other side of that denominator (`m − cᵢ − ε₂`, always
+negative); the max side already adds ε₂ to a non-negative difference. The fix and a
+regression test on the offending stencil (for bounds (0, 1) and (0, ∞)) are the second
+commit of the Oceananigans branch `glw/weno-z-float32-overflow` (`c78eeaa`), which this
+package pins. The corner is not specific to the infinite bound: the mass tracers'
+`(0, 1)` limiter has the same 0/0 for a zero cell with an undershoot of exactly ε₂.
+
 ### Breeze fix required for P3-aer2
 
 The prognostic-aerosol P3 configuration produced `NaN` in `ρnᶜˡ` after 8–9 steps in every
@@ -138,8 +155,8 @@ branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins
   sedimentation coupling is corrected in Breeze PR 964 is **not** exercised here, so that fix
   is not required for these runs. Switching to AIVA would require rebasing onto PR 964 first.
 - Oceananigans is pinned by `[sources]` to the branch `glw/weno-z-float32-overflow` (commit
-  `877618e`, still versioned 0.111.0): `main` at `67a2204` (per-cell bounds-preserving
-  limiter, renamed `update_advection!` contract) plus the Float32 WENO-Z weight cap described
+  `c78eeaa`, still versioned 0.111.0): `main` at `67a2204` (per-cell bounds-preserving
+  limiter, renamed `update_advection!` contract) plus the Float32 WENO-Z weight cap and the limiter 0/0 fix described
   above. Breeze is pinned to the branch `glw/lasso-ena-ocmain`
   (commit `5fc404c`), which stacks that contract (a per-scalar limiter refresh on the specific
   fields Breeze advects, the acoustic stepper's split time step as an

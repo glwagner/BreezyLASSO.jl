@@ -571,7 +571,7 @@ if HAVE_COVERT
         @test record["config"]["microphysics"] == "one_moment"
         @test haskey(record["inputs"], "snd_sha256") && haskey(record["inputs"], "prm_sha256")
         @test record["software"]["Breeze_source"] isa String
-        @test occursin("877618e", record["software"]["Oceananigans_source"])
+        @test occursin("c78eeaa", record["software"]["Oceananigans_source"])
         @test occursin("5fc404c", record["software"]["Breeze_source"])
         @test record["extra"]["tuple"] == [1, 2]
         # output writers build (profiles of already-averaged fields, time series, slices)

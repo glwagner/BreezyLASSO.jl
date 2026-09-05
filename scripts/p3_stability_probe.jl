@@ -5,6 +5,10 @@
 # PROBE_GRID=covert selects the 192-level Covert grid (10 m to 1.5 km) instead of the 260-level LASSO grid
 using BreezyLASSO, Breeze, Oceananigans, Oceananigans.Units, CUDA, Printf, Statistics
 using Oceananigans.Grids: zspacings
+using Oceananigans.Advection: BoundsPreservingWENO, compute_bounds_preserving_limiter!, materialize_advection
+using Oceananigans.BoundaryConditions: fill_halo_regions!
+using Oceananigans.Architectures: on_architecture
+using JLD2: jldsave
 
 arch = lowercase(ARGS[1]) == "gpu" ? GPU() : CPU()
 FT = ARGS[2] == "Float64" ? Float64 : Float32
@@ -75,16 +79,81 @@ function diagnostics(sim)
 end
 # Every iteration: catch the first non-finite prognostic before the NaN checker aborts, with
 # the extrema of the moment fields at that moment.
+# Rolling copy of the rain fields from the previous iteration, so the first non-finite cell can
+# be shown together with the state that produced it (PROBE_TRACE=1).
+trace = get(ENV, "PROBE_TRACE", "0") == "1"
+traced_names = filter(n -> haskey(μ, n), (:ρnʳ, :ρqʳ, :nʳ, :qʳ, :wʳₙ, :wʳ))
+previous_fields = Dict(n => Array(interior(μ[n])) for n in traced_names)
+zc_ = Array(znodes(grid_, Center()))
+
+function neighbourhood(fields, i, j, k, Nz)
+    for kk in max(k - 3, 1):min(k + 3, Nz)
+        vals = join([@sprintf("%s=%.4e", n, fields[n][i, j, kk]) for n in traced_names], " ")
+        @printf("         k=%3d z=%7.1f %s\n", kk, zc_[kk], vals)
+    end
+end
+
 function iteration_guard(sim)
     m = sim.model
     bad = first_bad(m)
-    isnothing(bad) && return nothing
+    if isnothing(bad)
+        trace && for n in traced_names
+            copyto!(previous_fields[n], Array(interior(μ[n])))
+        end
+        return nothing
+    end
     println("FIRST NONFINITE PROGNOSTIC: ", bad, " at iteration ", m.clock.iteration, " t = ", m.clock.time, " Δt = ", sim.Δt)
     for name in (:ρqᶜˡ, :ρnᶜˡ, :ρnᵃ, :ρqʳ, :ρnʳ, :ρqᵛ)
         haskey(μ, name) || continue
         f = Array(interior(μ[name]))
         finite = filter(isfinite, f)
         println("   ", name, ": nonfinite ", count(!isfinite, f), ", finite extrema ", isempty(finite) ? "none" : extrema(finite))
+    end
+    if trace
+        current = Dict(n => Array(interior(μ[n])) for n in traced_names)
+        idx = findall(!isfinite, current[:ρnʳ])
+        Nz = size(m.grid, 3)
+        for c in idx[1:min(3, end)]
+            i, j, k = Tuple(c)
+            println("   non-finite ρnʳ at ", (i, j, k), " z = ", zc_[k], " m — previous iteration:")
+            neighbourhood(previous_fields, i, j, k, Nz)
+            println("      current iteration:")
+            neighbourhood(current, i, j, k, Nz)
+            adv = m.advection[:ρnʳ]
+            if hasproperty(adv, :bounds) && !isnothing(adv.bounds) && hasproperty(adv.bounds, :limiter)
+                θ = Array(interior(adv.bounds.limiter))
+                println("      limiter θ (k-3..k+3): ", [θ[i, j, kk] for kk in max(k - 3, 1):min(k + 3, Nz)])
+                println("      limiter θ non-finite count: ", count(!isfinite, θ))
+            end
+        end
+        # Recompute the limiter from the previous (finite) state on the GPU and on the CPU from
+        # the same numbers, to separate the formula from the device arithmetic.
+        adv = m.advection[:ρnʳ]
+        if adv isa BoundsPreservingWENO
+            nprev = previous_fields[:nʳ]
+            gpu_field = CenterField(m.grid)
+            set!(gpu_field, nprev)
+            fill_halo_regions!(gpu_field)
+            compute_bounds_preserving_limiter!(adv, m.grid, gpu_field)
+            θ_gpu = Array(interior(adv.bounds.limiter))
+            cpu_grid = on_architecture(CPU(), m.grid)
+            cpu_scheme = materialize_advection(WENO(FT; order=5, bounds=(0.0, Inf)), cpu_grid)
+            cpu_field = CenterField(cpu_grid)
+            set!(cpu_field, nprev)
+            fill_halo_regions!(cpu_field)
+            compute_bounds_preserving_limiter!(cpu_scheme, cpu_grid, cpu_field)
+            θ_cpu = Array(interior(cpu_scheme.bounds.limiter))
+            println("   limiter recomputed from the previous state: GPU non-finite ", count(!isfinite, θ_gpu),
+                    ", CPU non-finite ", count(!isfinite, θ_cpu), ", max |GPU-CPU| over finite ",
+                    maximum(abs.(filter(isfinite, vec(θ_gpu .- θ_cpu))); init=0f0))
+            for c in findall(!isfinite, θ_gpu)[1:min(4, end)]
+                i, j, k = Tuple(c)
+                println("      GPU-NaN θ at ", (i, j, k), " CPU θ = ", θ_cpu[i, j, k], " nʳ (k-3..k+3) = ",
+                        [nprev[i, j, kk] for kk in max(k - 3, 1):min(k + 3, Nz)])
+            end
+            jldsave(joinpath("output", "probe_trace_$(get(ENV, "SLURM_JOB_ID", "local")).jld2");
+                    nʳ_previous=nprev, ρnʳ_previous=previous_fields[:ρnʳ], θ_gpu, θ_cpu)
+        end
     end
     error("non-finite state")
 end

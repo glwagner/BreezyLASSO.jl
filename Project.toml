@@ -24,7 +24,7 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [sources]
 Breeze = {url = "https://github.com/NumericalEarth/Breeze.jl", rev = "5fc404c"}
-Oceananigans = {url = "https://github.com/CliMA/Oceananigans.jl", rev = "877618e"}
+Oceananigans = {url = "https://github.com/CliMA/Oceananigans.jl", rev = "c78eeaa"}
 
 [compat]
 Breeze = "0.10"
