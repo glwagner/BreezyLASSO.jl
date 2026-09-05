@@ -8,6 +8,9 @@
 #SBATCH --output=output/slurm-%j.out
 # Usage: sbatch scripts/submit_gpu.sbatch <run_case.jl arguments...>
 set -euo pipefail
+# Separate compiled-code cache for the compute nodes (different CPU target than the login node);
+# packages and artifacts are still read from the shared depot.
+export JULIA_DEPOT_PATH="$HOME/.julia-compute:$HOME/.julia"
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 mkdir -p output
 export JULIA_CUDA_USE_COMPAT=false
