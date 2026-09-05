@@ -356,6 +356,42 @@ end
     @test H ≈ 11.5361 + (1850 - 1005) * 294.937 * 85.8638 / ℒ
 end
 
+@testset "Sedimenting rain carries its enthalpy" begin
+    using Breeze.Thermodynamics: saturation_specific_humidity, PlanarLiquidSurface
+    using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
+    grid = test_grid(; Nz=40, Lz=1000)
+    constants = ThermodynamicConstants(Float64)
+    reference_state = ReferenceState(grid, constants; surface_pressure=101300, potential_temperature=290)
+    dynamics = AnelasticDynamics(reference_state)
+    zc = Array(znodes(grid, Center()))
+    ρᵣ = Array(interior(reference_state.density, 1, 1, :))
+    p3 = P3Microphysics(Float64; cloud=CloudDroplets(Float64; number_concentration=75e6))
+    scalar_advection = BreezyLASSO.scalar_advection_schemes(5, p3, :qᵛ)
+    T₀ = 285.0
+    qsat = [saturation_specific_humidity(T₀, ρᵣ[k], constants, PlanarLiquidSurface()) for k in 1:40]
+    col(v) = repeat(reshape(v, 1, 1, 40), 8, 8, 1)
+    qʳ₀ = [600 ≤ z ≤ 750 ? 2e-3 : 0.0 for z in zc]
+    nʳ₀ = qʳ₀ ./ (4/3 * π * 1000 * (0.5e-3)^3)
+    function rain_column(with_enthalpy)
+        forcing = with_enthalpy ? (; ρs = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)) : NamedTuple()
+        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants,
+                                momentum_advection=WENO(order=5), scalar_advection, forcing)
+        set!(model; T=T₀, qᵛ=col(qsat), qʳ=col(qʳ₀), nʳ=col(nʳ₀))
+        Tᵢ = copy(interior(model.temperature))
+        for _ in 1:60
+            time_step!(model, 1.0)
+        end
+        return interior(model.temperature) .- Tᵢ
+    end
+    ΔT_without = rain_column(false)
+    ΔT_with = rain_column(true)
+    @test maximum(abs, ΔT_without) > 1      # rain arriving without its enthalpy warms by ~ℒΔqʳ/cᵖ
+    @test maximum(abs, ΔT_with) < 0.05       # with the transport the column stays isothermal
+    forcings = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)
+    @test length(forcings) == 4               # cloud liquid, rain, ice, liquid on ice
+    @test Breeze.AtmosphereModels.is_density_tendency_forcing(forcings[1])
+end
+
 @testset "Simple longwave radiation model" begin
     grid = test_grid(; Nz=24, Lz=3000)
     constants = ThermodynamicConstants(Float64)

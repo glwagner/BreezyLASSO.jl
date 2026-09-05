@@ -23,7 +23,7 @@ export
     MeanProfileNudging, LargeScaleVerticalAdvection, large_scale_thermodynamic_forcings,
     LargeScaleEnergyForcing, LargeScaleMoistureForcing, SAMSponge, sam_sponge_rates,
     upper_boundary_relaxation_forcings, UpperBoundaryEnergyRelaxation, UpperBoundaryMoistureRelaxation, SoundingTargetProfiles,
-    SimpleLongwaveRadiation,
+    SimpleLongwaveRadiation, SedimentationEnthalpyForcing, sedimentation_enthalpy_forcings,
     # surface
     prescribed_surface_flux_boundary_conditions, bulk_surface_flux_boundary_conditions,
     PrescribedStressUpdater, prescribed_stress_updater,
@@ -45,6 +45,7 @@ include("sam_input_files.jl")
 include("vertical_grid.jl")
 include("forcing_profiles.jl")
 include("large_scale_forcings.jl")
+include("sedimentation_enthalpy.jl")
 include("simple_longwave_radiation.jl")
 include("surface_fluxes.jl")
 include("initial_conditions.jl")

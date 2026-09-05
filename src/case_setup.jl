@@ -164,6 +164,7 @@ function build_case(data_dir;
                               p3_initialization = :condensate_free,
                               initial_droplet_number = nothing,
                               aerosol_replenishment = nothing,
+                              sedimentation_enthalpy = true,
                               label = "unlabeled",
                               output_dir = "output",
                               output_prefix = "lasso_ena",
@@ -226,6 +227,9 @@ function build_case(data_dir;
 
     microphysics_model, microphysics_record = build_microphysics(FT, microphysics; droplet_number, surface_density)
     moisture_name = Breeze.AtmosphereModels.moisture_specific_name(microphysics_model)
+
+    momentum_advection = WENO(order=advection_order)
+    scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name)
 
     #####
     ##### Large-scale forcing
@@ -296,6 +300,10 @@ function build_case(data_dir;
     elseif !isnothing(aerosol_replenishment)
         throw(ArgumentError("aerosol_replenishment must be nothing, :diagnostic_ccn, or a relaxation timescale"))
     end
+    if sedimentation_enthalpy
+        # Stand-in for Breeze PR 959: sedimenting condensate carries its static-energy content
+        forcing[:ρs] = sedimentation_enthalpy_forcings(microphysics_model, scalar_advection; thermodynamic_constants=constants)
+    end
     forcing = NamedTuple(name => value for (name, value) in forcing if !isempty(value))
 
     #####
@@ -346,9 +354,6 @@ function build_case(data_dir;
     #####
     ##### Model
     #####
-
-    momentum_advection = WENO(order=advection_order)
-    scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name)
 
     model = AtmosphereModel(grid; formulation = :StaticEnergy, dynamics, coriolis, closure,
                             microphysics = microphysics_model, radiation = radiation_model,
@@ -443,7 +448,7 @@ function build_case(data_dir;
                 exclude_subsurface_levels, temperature_neutral_evaporation,
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
-                aerosol_replenishment=string(aerosol_replenishment),
+                aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy,
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
 
