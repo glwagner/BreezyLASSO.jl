@@ -49,6 +49,17 @@ flux and `h = ∂s/∂q|_T = (cˣ − cᵖᵈ) T − ℒˣ`; a rain shaft crossi
 column now leaves T unchanged to 5 mK (test), versus ±1.7 K without it. It is on by default
 (`sedimentation_enthalpy = true`) and recorded in provenance; PR 959 will supersede it.
 
+### Bounds-preserving WENO is not conservative where its limiter fires
+
+A second P3 runaway (rain piling into the surface cell, reaching 10 g kg⁻¹ with vapor
+converted to rain by the negative-moisture repair) traced to Oceananigans'
+`WENO(bounds=(0, 1))`: it limits only the upwind reconstruction of the evaluating cell, so
+the two cells sharing a face apply different fluxes whenever the limiter is active. P3's fast
+sedimentation across the sharp rain gradient above the surface kept it active. Condensate
+masses therefore use plain (conservative) WENO with P3's `SpeciesBorrowing` repairing
+undershoots; vapor keeps the bounded scheme (`bounded_condensate_advection = false`,
+recorded).
+
 ### Breeze fix required for P3-aer2
 
 The prognostic-aerosol P3 configuration produced `NaN` in `ρnᶜˡ` after 8–9 steps in every
