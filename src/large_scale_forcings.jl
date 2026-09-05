@@ -208,24 +208,27 @@ Return `(; s = energy_forcing, <moisture_name> = moisture_forcing)` implementing
 `forcing.f90`, which adds `tls` to the temperature-like variable `t` (SAM: `t = T + gz/cp
 - (Lv/cp) qˡ - (Ls/cp) qⁱ` with constant `cp = 1004`) and `qls` to the vapor.
 
-SAM's vapor is a mixing ratio (per kg dry air) while Breeze carries mass fractions, so a
-vapor-only source `R = qls` [kg/kg-dry/s] maps, at fixed dry-basis condensate ratios, to
-`dqᵛ/dt = qᵈ (1 - qᵛ) R` and `dqˣ/dt = -qˣ qᵈ R` for each condensate `x` (`moisture_basis =
-:mixing_ratio`, the default; `:mass_fraction` applies `qls` to `qᵛ` verbatim). The
-condensate part is a ~1 % systematic correction that is applied to the vapor prognostic
-here and documented as omitted for the condensate prognostics themselves.
+SAM's vapor is a mixing ratio (per kg dry air) while Breeze carries mass fractions. The
+condensate mass fractions are left untouched by this forcing (Breeze coordinates), so a
+vapor-only source `R = qls` [kg/kg-dry/s] with `qᵛ + qᵈ = 1 - qᶜ` fixed maps exactly to
+
+    dqᵛ/dt = qᵈ² / (1 - qᶜ) R,   qᶜ = qˡ + qⁱ
+
+(`moisture_basis = :mixing_ratio`, the default; `:mass_fraction` applies `qls` verbatim),
+and only that vapor rate enters the energy cross term. The ~1 % difference from the verbatim
+rate is systematic; see the cloudy Jacobian test in `test/runtests.jl`.
 
 Breeze's prognostic is `s = cᵖᵐ(q) T + gz - ℒˡ qˡ - ℒⁱ qⁱ`, so the tendencies are mapped so
 that the **physical temperature invariant** holds: over a forcing-only step the state
 must satisfy `dT/dt = tls` and `dqᵛ/dt = qls` at fixed condensate and height. To first
 order in the heat-capacity coupling,
 
-    ds/dt = cᵖᵐ(q) tls + T Σₓ (cˣ - cᵖᵈ) dqˣ/dt
+    ds/dt = cᵖᵐ(q) tls + (cᵖᵛ - cᵖᵈ) T dqᵛ/dt
 
-The second term is what keeps the temperature unchanged while moisture with heat
-capacities `cˣ ≠ cᵖᵈ` changes; multiplying `tls` by `cᵖᵐ` alone (or by SAM's constant
-`cp`) would change `T` whenever `qls ≠ 0`. The step test in `test/runtests.jl` checks both
-invariants against the reconstructed `T`.
+The second term is what keeps the temperature unchanged while vapor with heat capacity
+`cᵖᵛ ≠ cᵖᵈ` replaces dry air; multiplying `tls` by `cᵖᵐ` alone (or by SAM's constant `cp`)
+would change `T` whenever `qls ≠ 0`. The tests in `test/runtests.jl` check the invariant in a
+forcing-only step (clear air) and against Breeze's thermodynamic state in cloudy cells.
 """
 function large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynamic_constants, moisture_name,
                                             moisture_basis=:mixing_ratio)
@@ -237,13 +240,14 @@ function large_scale_thermodynamic_forcings(tls, qls; microphysics, thermodynami
     return NamedTuple{(:s, moisture_name)}((energy, moisture))
 end
 
-# Mass-fraction rates implied by a SAM vapor mixing-ratio source R at fixed dry-basis
-# condensate ratios: dqᵛ/dt = qᵈ (1 - qᵛ) R, dqˣ/dt = -qˣ qᵈ R.
+# Vapor mass-fraction rate implied by a SAM vapor mixing-ratio source R with the condensate
+# mass fractions held fixed (qᵛ + qᵈ = 1 - qᶜ): dqᵛ/dt = qᵈ² / (1 - qᶜ) R.
 @inline function moisture_rates(::Val{:mixing_ratio}, q, R)
     qᵈ = dry_air_mass_fraction(q)
-    return (; vapor = qᵈ * (1 - q.vapor) * R, liquid = -q.liquid * qᵈ * R, ice = -q.ice * qᵈ * R)
+    qᶜ = q.liquid + q.ice
+    return (; vapor = qᵈ^2 / (1 - qᶜ) * R)
 end
-@inline moisture_rates(::Val{:mass_fraction}, q, R) = (; vapor = R, liquid = zero(R), ice = zero(R))
+@inline moisture_rates(::Val{:mass_fraction}, q, R) = (; vapor = R)
 
 struct LargeScaleEnergyForcing{T, Q, M, C, D, N, B}
     tls :: T
@@ -274,10 +278,8 @@ Base.show(io::IO, f::LargeScaleEnergyForcing) = print(io, summary(f))
     cᵖᵐ = mixture_heat_capacity(q, constants)
     cᵖᵈ = constants.dry_air.heat_capacity
     cᵖᵛ = constants.vapor.heat_capacity
-    cˡ = constants.liquid.heat_capacity
-    cⁱ = constants.ice.heat_capacity
     rates = moisture_rates(f.moisture_basis, q, qls)
-    return cᵖᵐ * tls + T * ((cᵖᵛ - cᵖᵈ) * rates.vapor + (cˡ - cᵖᵈ) * rates.liquid + (cⁱ - cᵖᵈ) * rates.ice)
+    return cᵖᵐ * tls + (cᵖᵛ - cᵖᵈ) * T * rates.vapor
 end
 
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleEnergyForcing,

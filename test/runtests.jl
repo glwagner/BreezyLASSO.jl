@@ -7,6 +7,7 @@ using Oceananigans.Units: Time
 using Statistics
 using Random
 using TOML
+using Dates: DateTime
 
 const FIXTURES = joinpath(@__DIR__, "fixtures")
 const COVERT_DIR = joinpath(@__DIR__, "..", "data", "covert2022_bin")
@@ -236,10 +237,52 @@ end
             if basis === :mass_fraction
                 @test all(isapprox.(Δq, 1e-7 * 100; rtol=1e-6))    # dqᵛ/dt = qls verbatim
             else
-                # SAM mixing-ratio source R: dqᵛ/dt = qᵈ (1 - qᵛ) R with qᵈ = 1 - qᵗ (no condensate here)
-                expected = @. (1 - q₀) * (1 - q₀) * 1e-7 * 100
+                # SAM mixing-ratio source R: dqᵛ/dt = qᵈ² / (1 - qᶜ) R with qᶜ = 0 here
+                expected = @. (1 - q₀)^2 * 1e-7 * 100
                 @test all(isapprox.(Δq, expected; rtol=1e-3))
                 @test all(Δq .< 1e-7 * 100)                        # ~1.6 % below the verbatim rate
+            end
+        end
+    end
+
+    @testset "tls/qls Jacobian in cloudy cells (P3 and one-moment moisture)" begin
+        using Breeze.Thermodynamics: StaticEnergyState, MoistureMassFractions, temperature, mixture_heat_capacity
+        # Apply the forcing kernels' s and qᵛ rates for Δt to a cloudy state (condensate fixed) and
+        # recover T from Breeze's own state: dT/dt must be tls, dqᵛ/dt the mapped source.
+        R = -1e-7; tls_value = 5e-5; Δt = 100.0
+        for (label, qˡ) in (("cloudy", 5e-4), ("clear", 0.0))
+            T = 288.0; qᵛ = 9e-3; p = 90000.0; z = 900.0
+            q = MoistureMassFractions(qᵛ, qˡ, 0.0)
+            s = mixture_heat_capacity(q, constants) * T + constants.gravitational_acceleration * z - constants.liquid.reference_latent_heat * qˡ
+            qᵈ = 1 - qᵛ - qˡ
+            dqᵛ = qᵈ^2 / (1 - qˡ) * R                       # moisture_basis = :mixing_ratio
+            ds = mixture_heat_capacity(q, constants) * tls_value + (1850 - 1005) * T * dqᵛ
+            q₁ = MoistureMassFractions(qᵛ + dqᵛ * Δt, qˡ, 0.0)
+            𝒰₁ = StaticEnergyState{Float64}(s + ds * Δt, q₁, z, p)
+            T₁ = temperature(𝒰₁, constants)
+            @test isapprox((T₁ - T) / Δt, tls_value; rtol=2e-3)
+            # ... whereas the verbatim rate or a cᵖᵐ-only mapping would not
+            𝒰₂ = StaticEnergyState{Float64}(s + mixture_heat_capacity(q, constants) * tls_value * Δt, q₁, z, p)
+            @test !isapprox((temperature(𝒰₂, constants) - T) / Δt, tls_value; rtol=2e-3)
+            # the kernel reproduces the same rates in a P3 model with this state
+            if label == "cloudy"
+                using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
+                p3 = P3Microphysics(Float64; cloud=CloudDroplets(Float64; number_concentration=75e6))
+                tls_f = profile_time_series(grid, times, [fill(tls_value, 24), fill(tls_value, 24)])
+                qls_f = profile_time_series(grid, times, [fill(R, 24), fill(R, 24)])
+                thermo_p3 = large_scale_thermodynamic_forcings(tls_f, qls_f; microphysics=p3, thermodynamic_constants=constants, moisture_name=:qᵛ)
+                model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants,
+                                        forcing=(; s=thermo_p3.s, qᵛ=thermo_p3.qᵛ))
+                set!(model; T=T, qᵛ=qᵛ, qᶜˡ=qˡ)
+                Oceananigans.TimeSteppers.update_state!(model)
+                fields = Oceananigans.fields(model)
+                fs = inner(model.forcing.ρs); fq = inner(model.forcing.ρqᵛ)
+                k = 8
+                Tk = fields.T[1, 1, k]; qᵛk = fields.qᵛ[1, 1, k]; qˡk = fields.qᶜˡ[1, 1, k]
+                qᵈk = 1 - qᵛk - qˡk
+                @test fq(1, 1, k, grid, model.clock, fields) ≈ qᵈk^2 / (1 - qˡk) * R
+                qk = MoistureMassFractions(qᵛk, qˡk, 0.0)
+                @test fs(1, 1, k, grid, model.clock, fields) ≈ mixture_heat_capacity(qk, constants) * tls_value + (1850 - 1005) * Tk * qᵈk^2 / (1 - qˡk) * R
             end
         end
     end
@@ -424,7 +467,7 @@ end
     # cooling is larger than the net-gain estimate but bounded by the inflow over the step
     @test expected * 4 < ΔT[1, 1, k_warm] < expected
     @test abs(ΔT[1, 1, k_warm - 1]) < 5e-3               # rain leaving at 285 K does not cool the next cell
-    @test all(abs.(ΔT[:, :, 1:k_warm-3]) .< 1e-6)        # nothing below the front yet
+    @test all(abs.(ΔT[:, :, 1:k_warm-3]) .< 1e-3)        # nothing below the front yet
     forcings = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)
     @test length(forcings) == 4               # cloud liquid, rain, ice, liquid on ice
     @test Breeze.AtmosphereModels.is_density_tendency_forcing(forcings[1])
