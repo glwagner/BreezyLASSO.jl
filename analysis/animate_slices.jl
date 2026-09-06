@@ -1,7 +1,9 @@
 # Animate the 10-minute slices of one or more runs: the cloud-liquid x–z section at y = Ly/2,
 # w at 900 m and the liquid water path, with color ranges fixed over the whole series.
 #   RESULTS_SUBDIR=covert_grid julia --project=analysis analysis/animate_slices.jl output/run_a output/run_b ...
-# Writes results/<subdir>/animation_<run>.mp4 (6 frames per second, one frame per 10 simulated minutes).
+# Writes results/<subdir>/animation_<run>.mp4, one frame per saved slice (ANIMATION_FPS frames per second,
+# default 6; 12 for the 1-minute-slice runs). ANIMATION_SIZE (default 1300x900 points), ANIMATION_FONTSIZE (14),
+# FIG_PX_PER_UNIT (1) and ANIMATION_COMPRESSION (H.264 CRF, 28) trade legibility for file size.
 using CairoMakie, JLD2, Oceananigans, Oceananigans.Units, Printf
 
 runs = ARGS
@@ -10,6 +12,8 @@ mkpath(results_dir)
 framerate = parse(Int, get(ENV, "ANIMATION_FPS", "6"))
 px_per_unit = parse(Float64, get(ENV, "FIG_PX_PER_UNIT", "1"))
 compression = parse(Int, get(ENV, "ANIMATION_COMPRESSION", "28"))   # H.264 CRF; 20 is Makie's default, higher is smaller
+width, height = parse.(Int, split(get(ENV, "ANIMATION_SIZE", "1300x900"), "x"))   # figure size in points; smaller for web embeds
+fontsize = parse(Int, get(ENV, "ANIMATION_FONTSIZE", "14"))
 
 slab(f, dims) = dropdims(Array(interior(f)); dims)
 
@@ -40,8 +44,8 @@ for run in runs
     l_obs = @lift l_frames[$n]
     title = @lift @sprintf("%s — t = %.1f h after 06 UTC 18 July 2017", label, times[$n] / 3600)
 
-    fig = Figure(size=(1300, 900), fontsize=14)
-    Label(fig[0, :], title, fontsize=18, tellwidth=false)
+    fig = Figure(size=(width, height), fontsize=fontsize)
+    Label(fig[0, :], title, fontsize=fontsize + 4, tellwidth=false)
     top = fig[1, 1] = GridLayout()
     bottom = fig[2, 1] = GridLayout()
     ax1 = Axis(top[1, 1], xlabel="x (km)", ylabel="z (m)", title="cloud liquid qᶜˡ (g kg⁻¹) at y = Ly/2")
