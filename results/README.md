@@ -50,3 +50,24 @@ Covert-grid P3 members on plain-moment advection (jobs 860, 862) died within 21 
 rain-number runaway; the first positivity-limited Covert-grid members (874, 875) and the first
 LASSO-grid members (872, 873) ran on Oceananigans `877618e` and died from the limiter's 0/0
 corner at 100 s, 2.1 h, 5.7 h and (cancelled at 2.5 h) respectively before the fix in `c78eeaa`.
+
+## Reruns with slices every simulated minute (`*_posmom_s60`)
+
+The six members were rerun unchanged except for `--slice_interval 60` (jobs 890–895, 6 September
+2026) to make smooth animations; each reproduces its production run. `animation_<run>_s60.mp4`
+in the two subdirectories plays the 361 one-minute slices at 12 frames per second (cloud-liquid
+section at y = Ly/2, w at 900 m, liquid water path), rendered by `analysis/animate_slices.jl`
+with `ANIMATION_SIZE=820x560 ANIMATION_FONTSIZE=11 ANIMATION_FPS=12 ANIMATION_COMPRESSION=32`.
+
+| member | rerun job | wall | LWP at 6 h (g m⁻²) | rain at 6 h (mm day⁻¹) | production |
+|---|---|---|---|---|---|
+| Covert 1M | 890 | 69 min | 132 | 0.29 | 126 / 0.13 |
+| Covert P3-N75 | 891 | 3.9 h | 233 | 0.31 | 233 / 0.31 |
+| Covert P3-aer2 | 892 | 6.0 h | 237 | 0.001 | 237 / 0.001 |
+| LASSO 1M | 893 | 93 min | 118 | 0.28 | 120 / 0.33 |
+| LASSO P3-N75 | 894 | 5.2 h | 201 | 0.19 | 201 / 0.19 |
+| LASSO P3-aer2 | 895 | 8.1 h | 204 | 0.001 | 204 / 0.001 |
+
+The 1M rain rates differ from production at the 0.1 mm day⁻¹ level because the surface rain
+flux is an instantaneous value in a drizzling deck; LWP and cloud fraction match. The earlier
+10-minute animations were removed once these existed.
