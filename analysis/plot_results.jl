@@ -5,7 +5,8 @@
 using CairoMakie, JLD2, Oceananigans, Oceananigans.Units, Statistics, Printf
 
 runs = isempty(ARGS) ? ["output/covert_public_bin_p3_n75"] : ARGS
-results_dir = joinpath(@__DIR__, "..", "results", get(ENV, "RESULTS_SUBDIR", ""))
+results_dir = joinpath(@__DIR__, "..", "results", get(ENV, "RESULTS_SUBDIR", ""))   # an absolute RESULTS_SUBDIR wins
+px_per_unit = parse(Float64, get(ENV, "FIG_PX_PER_UNIT", "2"))                    # 1 for lighter web copies
 mkpath(results_dir)
 
 function load_series(dir)
@@ -41,7 +42,7 @@ for (run, label, color) in zip(runs, labels, colors)
     lines!(ax4, h, 86400 .* s.rain; label, color)
 end
 axislegend(ax1, position=:rb)
-save(joinpath(results_dir, "timeseries.png"), fig)
+save(joinpath(results_dir, "timeseries.png"), fig; px_per_unit)
 
 # --- profiles -----------------------------------------------------------------------
 # Column data with the vertical coordinate of its own location (w² sits on faces).
@@ -85,7 +86,7 @@ for (run, label) in zip(runs, labels)
     xlims!(axes[1], 288, 312)
     axislegend(axes[1], position=:rb, labelsize=9)
     Label(profile_fig[0, :], "$label: hourly-mean profiles", fontsize=18, tellwidth=false)
-    save(joinpath(results_dir, "profiles_$label.png"), profile_fig)
+    save(joinpath(results_dir, "profiles_$label.png"), profile_fig; px_per_unit)
 end
 
 # --- slices at the last output ------------------------------------------------------
@@ -108,7 +109,7 @@ for (run, label) in zip(runs, labels)
     hm3 = heatmap!(ax3, 1e3 * lwp[n]; colormap=:viridis)
     Colorbar(bottom[1, 4], hm3)
     Label(slice_fig[0, :], label, fontsize=18, tellwidth=false)
-    save(joinpath(results_dir, "slices_$label.png"), slice_fig)
+    save(joinpath(results_dir, "slices_$label.png"), slice_fig; px_per_unit)
 end
 # --- provenance and summary ---------------------------------------------------------
 open(joinpath(results_dir, "summary.md"), "w") do io
