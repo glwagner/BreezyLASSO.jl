@@ -14,7 +14,8 @@ cd "$(dirname "$0")/.."
 # RUNS (default "one_moment p3_n75 p3_aer2") selects the members; CPUS (4) and MEM (100G) per run.
 # GRID=lasso runs on the 260-level LASSO grid (Δz = 25 m to 6 km) instead of the 192-level Covert
 # grid of the prm/grd files (output suffix _lassogrid); MOMENTS=positive selects the positivity-only
-# limiter for the number/volume moments (suffix _posmom).
+# limiter for the number/volume moments (suffix _posmom); SLICE_INTERVAL=<seconds> overrides the
+# 10-minute slice cadence (suffix _s<seconds>), e.g. 60 for smooth animations.
 MODE=${MODE:-fixed}
 FLOAT=${FLOAT:-Float32}
 PARTITION=${PARTITION:-gpua100largex4}
@@ -30,6 +31,7 @@ fi
 [ "$FLOAT" = "Float64" ] && suffix="${suffix}_f64"
 if [ "${GRID:-covert}" = "lasso" ]; then common="$common --lasso_grid true"; suffix="${suffix}_lassogrid"; fi
 if [ "${MOMENTS:-plain}" = "positive" ]; then common="$common --moment_advection positive"; suffix="${suffix}_posmom"; fi
+if [ -n "${SLICE_INTERVAL:-}" ]; then common="$common --slice_interval $SLICE_INTERVAL"; suffix="${suffix}_s${SLICE_INTERVAL}"; fi
 submit() {  # submit <partition> <job name> <microphysics> [extra run_case options]
     local partition=$1 name=$2 microphysics=$3; shift 3
     sbatch --partition="$partition" --time="$TIME" --gres=gpu:1 --cpus-per-task="${CPUS:-4}" --mem="${MEM:-100G}" --job-name="$name" \

@@ -95,7 +95,7 @@ end
 is_p3(microphysics) = microphysics isa Breeze.Microphysics.PredictedParticleProperties.PredictedParticlePropertiesMicrophysics
 
 """
-    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true)
+    scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true, energy_name=:ρs)
 
 Advection scheme per prognostic scalar, following Breeze's `examples/rico.jl`: the static
 energy uses plain WENO; every microphysical *water-mass* tracer (the vapor / equilibrium
@@ -118,17 +118,17 @@ reconstruction with its own cell's factor, which restores conservation (validate
 `scripts/mass_budget_probe.jl` and the GPU smokes). `bounded_condensates = false` (plain WENO for the
 condensate masses) is retained as a diagnostic sensitivity only.
 """
-function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true)
+function scalar_advection_schemes(order, microphysics, moisture_name; bounded_condensates=true, positive_moments=true, energy_name=:ρs)
     weno = WENO(; order)
     bounded = WENO(; order, bounds=(0, 1))
     # Number and volume moments are not bounded by one, so their limiter only enforces
     # positivity (an infinite upper bound disables the maximum side of the limiter).
     moments = positive_moments ? WENO(; order, bounds=(0.0, Inf)) : weno
     moisture = Symbol("ρ", moisture_name)
-    names = (:ρs, moisture, Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
+    names = (energy_name, moisture, Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
     schemes = map(names) do name
         s = string(name)
-        name === :ρs ? weno :
+        name === energy_name ? weno :
         name === moisture ? bounded :
         occursin("ρq", s) ? (bounded_condensates ? bounded : weno) : moments
     end
