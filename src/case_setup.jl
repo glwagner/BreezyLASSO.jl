@@ -127,10 +127,9 @@ function scalar_advection_schemes(order, microphysics, moisture_name; bounded_co
     moisture = Symbol("ρ", moisture_name)
     names = (energy_name, moisture, Breeze.AtmosphereModels.prognostic_field_names(microphysics)...)
     schemes = map(names) do name
-        s = string(name)
         name === energy_name ? weno :
         name === moisture ? bounded :
-        occursin("ρq", s) ? (bounded_condensates ? bounded : weno) : moments
+        occursin("ρq", string(name)) ? (bounded_condensates ? bounded : weno) : moments
     end
     return NamedTuple{names}(schemes)
 end
