@@ -1,0 +1,5 @@
+| run | label | hours | final LWP (g m⁻²) | mean LWP last hour | final cloud fraction | final rain (mm day⁻¹) |
+|---|---|---|---|---|---|---|
+| covert_public_bin_one_moment_lassogrid_posmom_s60_theta | Covert-public-bin development benchmark (not an official LASSO-ENA reproduction) [overrides: Nx, output_dir, microphysics, Ny, FT, perturbation, z_faces, moment_advection, arch, slice_interval] | 6.0 | 116.6 | 104.9 | 1.00 | 0.176 |
+| covert_public_bin_p3_n75_lassogrid_posmom_s60_theta | Covert-public-bin development benchmark (not an official LASSO-ENA reproduction) [overrides: Nx, output_dir, microphysics, Ny, FT, perturbation, z_faces, moment_advection, arch, slice_interval] | 6.0 | 161.4 | 156.3 | 1.00 | 0.048 |
+| covert_public_bin_p3_aer2_lassogrid_posmom_s60_theta | Covert-public-bin development benchmark (not an official LASSO-ENA reproduction) [overrides: Nx, FT, perturbation, z_faces, moment_advection, slice_interval, aerosol_replenishment, output_dir, microphysics, Ny, arch] | 6.0 | 161.4 | 154.8 | 1.00 | 0.000 |
