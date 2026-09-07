@@ -46,6 +46,7 @@ haskey(opts, "cfl") && (kw[:cfl] = parse(Float64, opts["cfl"]))
 haskey(opts, "max_dt") && (kw[:max_Δt] = parse(Float64, opts["max_dt"]))
 haskey(opts, "lasso_grid") && opts["lasso_grid"] == "true" && (kw[:z_faces] = lasso_ena_vertical_faces())
 haskey(opts, "moment_advection") && (kw[:moment_advection] = Symbol(opts["moment_advection"]))
+haskey(opts, "formulation") && (kw[:formulation] = Symbol(opts["formulation"]))   # LiquidIcePotentialTemperature (default) or StaticEnergy
 haskey(opts, "profile_interval") && (kw[:profile_interval] = parse(Float64, opts["profile_interval"]))
 haskey(opts, "slice_interval") && (kw[:slice_interval] = parse(Float64, opts["slice_interval"]))
 

@@ -142,8 +142,8 @@ version = "1.21.7+0"
 
 [[deps.Breeze]]
 deps = ["Adapt", "Artifacts", "Dates", "DocStringExtensions", "GPUArraysCore", "InteractiveUtils", "JLD2", "KernelAbstractions", "LazyArtifacts", "Oceananigans", "OffsetArrays", "Printf", "SpecialFunctions", "Statistics"]
-git-tree-sha1 = "e5c6636fc32c35bf291c82b88810cc38a13d3377"
-repo-rev = "5fc404c"
+git-tree-sha1 = "f4d756ffc6a4f3fc7a4d3fdc7cbd8747b9cdac92"
+repo-rev = "a7fa3c8"
 repo-url = "https://github.com/NumericalEarth/Breeze.jl"
 uuid = "660aa2fb-d4c8-4359-a52c-9c057bc511da"
 version = "0.10.0"

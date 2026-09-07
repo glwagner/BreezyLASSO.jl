@@ -158,10 +158,14 @@ branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins
   `c78eeaa`, still versioned 0.111.0): `main` at `67a2204` (per-cell bounds-preserving
   limiter, renamed `update_advection!` contract) plus the Float32 WENO-Z weight cap and the limiter 0/0 fix described
   above. Breeze is pinned to the branch `glw/lasso-ena-ocmain`
-  (commit `5fc404c`), which stacks that contract (a per-scalar limiter refresh on the specific
+  (commit `a7fa3c8`), which stacks that contract (a per-scalar limiter refresh on the specific
   fields Breeze advects, the acoustic stepper's split time step as an
   `adaptive_advection_timestep` method) on top of the P3 subnormal-cloud fix of
-  `glw/p3-subnormal-cloud-mass`. Both revisions are recorded in every provenance file.
+  `glw/p3-subnormal-cloud-mass`, plus three fixes found in the ENA hindcast: the prescribed-Nᶜˡ
+  homogeneous-freezing number reset (`29048ce`), terminal velocities in the advection
+  timescale (`d7cac2f`), and the microphysics moved to the device before the energy-flux
+  boundary conditions of the potential-temperature formulation capture it (`a7fa3c8`).
+  Both revisions are recorded in every provenance file.
 
 ## Layout
 
@@ -215,7 +219,14 @@ mode, translation frame, aerosol chemistry, and any overrides).
 - P3 aerosol chemistry is set explicitly to the HUJI-SBM values (density 1790 kg m⁻³,
   molecular weight 0.115 kg mol⁻¹, van 't Hoff factor 3). The SBM `diagCCN` reservoir rule
   is applied once per time step (`DiagnosticCCNProjection`), not at every microphysics call.
-- Breeze uses `s = cᵖᵐ(q) T + gz − ℒqˡ` with variable heat capacity where SAM uses `cp = 1004`;
+- The thermodynamic prognostic is Breeze's liquid-ice potential temperature density `ρθˡⁱ`
+  (`formulation = :LiquidIcePotentialTemperature`, the default since 7 September 2026);
+  `formulation = :StaticEnergy` (`--formulation StaticEnergy`) reproduces the earlier runs. The
+  SAM forcing terms are still supplied as energy tendencies (tls into `s`, the sedimentation
+  enthalpy, the top relaxation) and energy-flux boundary conditions; the potential-temperature
+  model converts them by `1/(cᵖᵐ Π)`, and the subsidence acts on the model's own specific
+  variable (`θˡⁱ` or `s`).
+- Breeze's static energy is `s = cᵖᵐ(q) T + gz − ℒqˡ` with variable heat capacity where SAM uses `cp = 1004`;
   the forcing and surface-flux adapters keep the physical temperature response identical.
 - Below-surface sounding levels are interpolated through (as SAM does; `exclude_subsurface_levels`
   is an explicit sensitivity).

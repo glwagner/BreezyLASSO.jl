@@ -211,6 +211,7 @@ function build_case(data_dir;
                               sedimentation_enthalpy = true,
                               bounded_condensate_advection = nothing,
                               moment_advection = :positive,
+                              formulation = :LiquidIcePotentialTemperature,
                               label = "unlabeled",
                               output_dir = "output",
                               output_prefix = "lasso_ena",
@@ -278,9 +279,16 @@ function build_case(data_dir;
     momentum_advection = WENO(order=advection_order)
     bounded_condensate_advection = something(bounded_condensate_advection, true)
     moment_advection ∈ (:plain, :positive) || throw(ArgumentError("moment_advection must be :plain or :positive, got $moment_advection"))
+    formulation ∈ (:LiquidIcePotentialTemperature, :StaticEnergy) ||
+        throw(ArgumentError("formulation must be :LiquidIcePotentialTemperature or :StaticEnergy, got $formulation"))
+    # The energy prognostic is ρθ (liquid-ice potential temperature) or ρs (static energy); the
+    # energy-based forcings and flux boundary conditions below are supplied under the `s`/`ρs`
+    # keys in both cases, which the potential-temperature model converts by 1/(cᵖᵐ Π).
+    energy_name = formulation === :StaticEnergy ? :ρs : :ρθ
     scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name;
                                                 bounded_condensates=bounded_condensate_advection,
-                                                positive_moments=(moment_advection === :positive))
+                                                positive_moments=(moment_advection === :positive),
+                                                energy_name)
 
     #####
     ##### Large-scale forcing
@@ -332,7 +340,11 @@ function build_case(data_dir;
     forcing[:u] = compact(geostrophic_forcing.u, nudging_u, vadv, sponge)
     forcing[:v] = compact(geostrophic_forcing.v, nudging_v, vadv, sponge)
     forcing[:w] = compact(sponge)
-    forcing[:s] = compact(thermodynamic.s, vadv, upper.s)
+    # Energy tendencies (tls, top relaxation) stay under `s`; the subsidence advects the model's own
+    # specific thermodynamic field, `s` for static energy and `θ` for potential temperature.
+    forcing[:s] = compact(thermodynamic.s, upper.s)
+    energy_specific = formulation === :StaticEnergy ? :s : :θ
+    forcing[energy_specific] = (get(forcing, energy_specific, ())..., compact(vadv)...)
     forcing[moisture_name] = compact(thermodynamic[moisture_name], vadv, upper[moisture_name])
     if vertical_advection === :full_field
         for ρname in Breeze.AtmosphereModels.prognostic_field_names(microphysics_model)
@@ -406,7 +418,7 @@ function build_case(data_dir;
     ##### Model
     #####
 
-    model = AtmosphereModel(grid; formulation = :StaticEnergy, dynamics, coriolis, closure,
+    model = AtmosphereModel(grid; formulation, dynamics, coriolis, closure,
                             microphysics = microphysics_model, radiation = radiation_model,
                             momentum_advection, scalar_advection, forcing, boundary_conditions,
                             thermodynamic_constants = constants)
@@ -506,7 +518,7 @@ function build_case(data_dir;
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
                 aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy, bounded_condensate_advection,
-                moment_advection=string(moment_advection),
+                moment_advection=string(moment_advection), formulation=string(formulation),
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
 
@@ -543,7 +555,7 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
     qᵛ = μ.qᵛ
     θ = liquid_ice_potential_temperature(model)
     T = model.temperature
-    s = model.formulation.specific_energy
+    s = Breeze.AtmosphereModels.Diagnostics.StaticEnergy(model)   # a diagnostic in either formulation
 
     profile_fields = (; u, v, w² = w^2, uw = u * w, vw = v * w, θ, T, s, qᵛ, qᶜˡ, qʳ,
                         cloud_fraction = cloud_fraction_profile(model))

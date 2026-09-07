@@ -572,7 +572,7 @@ if HAVE_COVERT
         @test haskey(record["inputs"], "snd_sha256") && haskey(record["inputs"], "prm_sha256")
         @test record["software"]["Breeze_source"] isa String
         @test occursin("c78eeaa", record["software"]["Oceananigans_source"])
-        @test occursin("5fc404c", record["software"]["Breeze_source"])
+        @test occursin("a7fa3c8", record["software"]["Breeze_source"])
         @test record["extra"]["tuple"] == [1, 2]
         # output writers build (profiles of already-averaged fields, time series, slices)
         written = lasso_ena_simulation(COVERT_DIR; preset=:covert_public_bin, arch=CPU(), FT=Float32, Nx=8, Ny=8, Lx=280, Ly=280,
