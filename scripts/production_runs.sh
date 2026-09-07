@@ -32,6 +32,10 @@ fi
 if [ "${GRID:-covert}" = "lasso" ]; then common="$common --lasso_grid true"; suffix="${suffix}_lassogrid"; fi
 if [ "${MOMENTS:-plain}" = "positive" ]; then common="$common --moment_advection positive"; suffix="${suffix}_posmom"; fi
 if [ -n "${SLICE_INTERVAL:-}" ]; then common="$common --slice_interval $SLICE_INTERVAL"; suffix="${suffix}_s${SLICE_INTERVAL}"; fi
+# FORMULATION=StaticEnergy reproduces the pre-7-September runs (suffix _s); the default is
+# LiquidIcePotentialTemperature. TAG=<text> appends a free suffix to the output directory.
+if [ -n "${FORMULATION:-}" ]; then common="$common --formulation $FORMULATION"; [ "$FORMULATION" = "StaticEnergy" ] && suffix="${suffix}_s"; fi
+if [ -n "${TAG:-}" ]; then suffix="${suffix}_${TAG}"; fi
 submit() {  # submit <partition> <job name> <microphysics> [extra run_case options]
     local partition=$1 name=$2 microphysics=$3; shift 3
     sbatch --partition="$partition" --time="$TIME" --gres=gpu:1 --cpus-per-task="${CPUS:-4}" --mem="${MEM:-100G}" --job-name="$name" \
