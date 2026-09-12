@@ -91,7 +91,7 @@ inherited and only the newly resolved scales spin up.
 
 ## 4. Blockers: one closed, one open, one changed shape
 
-### 4.1 Multi-GPU — CLOSED, via NCCL
+### 4.1 Multi-GPU — transport verified, the CALLER is broken
 
 The `MPIError(17)` on a bare `LatitudeLongitudeGrid` with one `CenterField` and one
 `fill_halo_regions!` was confirmed on a compute node (job 1077):
@@ -128,7 +128,26 @@ exchange leaves NaN rather than a plausible number and a mis-assembled corner is
 predicting from coordinates instead would have forced a tolerance, because two ranks can round a
 node position differently in the last bit.
 
-What remains untested is a real model step under NCCL, which the ladder reaches at L2.
+**What remained untested was a real model step under NCCL — and it fails.** A probe reproducing
+Breeze's own `update_state!` call sequence on two GPUs shows that after asynchronous halo fills are
+launched on density, momentum AND tracers, only density and momentum are synchronised: the run is
+left with `pending_unpacks = 3` and the **tracer neighbour halo still holding its poison value**. An
+explicit `synchronize_communication!(tracer)` replaces it with the correct neighbour value and clears
+the queue. So the exchange is right and the completion is missing from the caller — which means every
+distributed Breeze run reads stale tracer halos: moisture, every microphysical species, and the
+closure's TKE.
+
+This is worth stating carefully because the two facts are easy to conflate. **A bitwise-exact
+transport gate and a broken model are entirely compatible**: our halo test exercised Oceananigans'
+exchange with synthetic fields and passed on 2 and 4 ranks including corners, while the defect sits
+one level up in how Breeze calls it. Multi-GPU is therefore blocked again, for a completely different
+reason than the MPI problem it replaced, and the same defect would meet the coupled-model benchmark
+on Perlmutter.
+
+The minimal fix is `async = false` in Breeze's `update_state!`, or equivalently an explicit
+completion immediately after the asynchronous fill — identical ordering. Genuine overlap would need
+separate interior work and boundary completion, which Breeze does not currently schedule, so there is
+no performance being protected by the present arrangement.
 
 The same check belongs in the Perlmutter readiness list as a named test rather than an assumption:
 it presents as a CUDA error in the middle of the first exchange, not as a setup failure.
