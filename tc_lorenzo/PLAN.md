@@ -45,94 +45,158 @@ about 650 km northward inside it, staying clear of every boundary. Nearest land:
 15–17°N, 22–25°W, ten degrees east of the eastern boundary; the Lesser Antilles six degrees west of
 the western one.
 
-## 3. The refinement ladder, with honest arithmetic
+## 3. The refinement ladder — revised, on measured allocations
 
-Outer domain is 2047 km zonal (at 23°N) by 2224 km meridional. Assuming ~100 vertical levels to a
-20 km top:
+The first version of this section carried an arithmetic error and a guessed cell budget. Both are
+replaced here by Codex's exact-shape memory census, validated against real GPU allocations: a
+mixed-phase 1M + TKE model at 64³×150 allocates 240,583,440 bytes on an A100, matching the
+CPU-shape prediction exactly, and the same agreement holds at 128×128×150. The GPU also carries a
+radiation `TransposedStateCache` of `4·ncol·(5·nz+1)` bytes that a CPU-shape count misses.
 
-| stage | spacing | domain | cells | Float32 fields | where |
-|---|---|---|---:|---:|---|
-| L0 | 6 km | 20° × 20° | 12.6 M | ~2 GB | 1 GPU |
-| L1 | 3 km | 20° × 20° | 50.6 M | ~8 GB | 1 GPU |
-| L2 | 1.5 km | 20° × 20° | 202 M | ~32 GB | 1 GPU (tight) or 4 |
-| L3 | 750 m | 10° × 10° | 202 M | ~32 GB | 4 GPUs |
-| L4 | 100 m | 2° × 2° | 739 M (Nz 150) | ~118 GB | **beyond 4 × 80 GB** |
-| L4′ | 100 m | 4° × 4° | 2.96 G | ~473 GB | Perlmutter |
+Two corrections to what was written before:
 
-**So 100 m is not reachable locally on any useful domain**, which is consistent with Greg's
-expectation that it moves to Perlmutter. Locally the realistic floor is **750 m on a reduced domain
-with 4 GPUs**, or 1.5 km on the full domain. Everything finer is a Perlmutter job.
+* the old table claimed 118 GB was "beyond 4 × 80 GB" — 4 × 80 GB is 320 GB, and the claim was
+  simply wrong;
+* the level count is **86**, not the ~100–150 assumed, because that is what the stated vertical
+  spacing produces. The driver no longer accepts a bare level count at all (§6).
+
+Outer domain: 2047 km zonal at 23°N by 2224 km meridional. Device capacity is **79.14 GiB
+accessible** per A100, not the nominal 80.
+
+| stage | spacing | domain | cells (Nz 86) | GPUs | GiB/rank | fits |
+|---|---|---|---:|---:|---:|---|
+| L0 | 6 km | 20° × 20° | 10.9 M | 1 | ~6 | yes |
+| L1 | 3 km | 20° × 20° | 43.5 M | 1 | ~23 | yes |
+| L2 | 1.5 km | 20° × 20° | 174 M | 4 | ~22 | yes |
+| L3 | 750 m | 10° × 10° | 174 M | 4 | ~22 | yes |
+| L4 | 100 m | 2° × 2° | 392 M | 4 | **49.8** | yes, subject to peak |
+| L4 | 100 m | 2° × 2°, Nz 150 | 683 M | 4 | **84.3** | **no** — exceeds 79.14 |
+| L4′ | 100 m | 4° × 4°, Nz 150 | 2.7 G | 32 | 40.8 | Perlmutter |
+| L4′ | 100 m | 4° × 4°, Nz 150 | 2.7 G | 64 (40 GiB) | 20.5 | Perlmutter |
+
+The headline changes: **100 m is reachable locally at 86 levels on a 2° × 2° box** and is not
+reachable at 150 levels. That makes the fine-stage memory a *choice about vertical resolution*
+rather than a hard wall — and it is the cheap 86-level mesh that deserves the scepticism, because at
+100 m horizontal a 500 m cell aloft is a 1:5 aspect ratio and an eyewall updraft resolved that way
+is not an LES in the vertical.
+
+The independent limit is **residence time**, and it is what actually rules the small box out for
+production. Lorenzo translates at 9 kt, about 400 km per day, and a 2° box is 205 km across: a fixed
+2° window loses the storm in well under a day. The working plan is therefore a fixed **4° × 6°**
+nest, recentred between stages, holding roughly 12 h per stage — larger fixed nests recentred
+between refinements rather than new moving-nest machinery.
 
 Each stage restarts from the previous stage's saved state rather than from rest, so the vortex is
 inherited and only the newly resolved scales spin up.
 
-## 4. Three blockers, all already measured, none speculative
+## 4. Blockers: one closed, one open, one changed shape
 
-### 4.1 Multi-GPU is blocked on this cluster — hard gate on L2 and beyond
+### 4.1 Multi-GPU — CLOSED, via NCCL
 
-Oceananigans' distributed halo exchange fails with `MPIError(17)` (truncation) on a **bare
-`LatitudeLongitudeGrid` with one `CenterField` and one `fill_halo_regions!`** across two GPU ranks.
-Reproducer: `~/ena_hindcast/dist_halo_mwe.jl`. Nothing of ours is involved.
-
-Cause now confirmed on a compute node (job 1077):
+The `MPIError(17)` on a bare `LatitudeLongitudeGrid` with one `CenterField` and one
+`fill_halo_regions!` was confirmed on a compute node (job 1077):
 
 ```
 mca:mpi:base:param:mpi_built_with_cuda_support:value:false
 ```
 
-The cluster's OpenMPI 4.1.x is **not CUDA-aware**, there is no UCX, and Julia's bundled MPICH is
-not CUDA-aware either. Oceananigans allocates its communication buffers with
-`on_architecture(arch, …)`, so on `Distributed(GPU())` they are `CuArray`s handed straight to MPI,
-which cannot read device pointers. Two routes, neither of which I can take unilaterally:
+The cluster's OpenMPI is not CUDA-aware and there is no UCX, so Oceananigans' device-resident
+communication buffers are handed to an MPI that cannot read them. The resolution is neither of the
+two routes proposed before: Oceananigans' **NCCL extension** bypasses MPI for the halo exchange
+entirely. `NCCLDistributed(GPU(); partition = Partition(x, y))` provides
+`distributed_fill_halo_event!` with corner exchanges, and host-scalar collectives still work through
+the MPI handle the NCCL communicator carries. NERSC supports NCCL over Slingshot through
+`nccl-plugin`, so the same path carries to Perlmutter.
 
-- **(a) a CUDA-aware MPI build** (UCX + OpenMPI with CUDA) — a systems task;
-- **(b) stage the halo buffers through host memory** — a small, well-defined Oceananigans patch,
-  slower but functional, and a sensible upstream contribution.
+The driver takes `--arch nccl --ranks px,py`. Halo validation on 2 and 4 GPUs is pending hardware.
 
-**Until one of these exists, only single-GPU stages (L0, L1, and L2 at the memory limit) are
-runnable here.** This should be settled before the ladder reaches L3, not when it gets there.
+### 4.2 Float32 at fine resolution — OPEN, unchanged
 
-### 4.2 Float32 fails at fine resolution — direct threat to Greg's Float32 requirement
+At ENA, Float32 produced NaNs at 3 km three times (17 min, 36 min, 3.4 h) where Float64 ran clean;
+the cost of the Float64 workaround is 1.55×. The first non-finite value appeared in dry density and
+61 complete columns failed in one step. The generator is still unlocalized. My proposed mechanism —
+cancellation in the bottom continuity flux — was refuted: at an impermeable flat bottom the lower
+face flux is zero, and a pinned-solver probe passed 26 assertions with finite inputs in both
+precisions. What the probe did establish is that a single injected NaN at one face contaminates all
+113 levels of a column, which is why the original "level 1, dry density" reading was a scan-order
+artifact and not a surface-origin failure.
 
-At ENA, Float32 produced NaNs at 3 km three times (17 min, 36 min, 3.4 h); Float64 ran clean.
-The first non-finite value was in the dry density, and 61 complete columns failed in one step. The
-generator is still unlocalized and is with Codex for stage-local capture; the mechanism is not
-cancellation in the bottom continuity flux, which was my hypothesis and was refuted. Cost of the
-workaround is 1.55×.
+The TC differs from ENA in ways that could help or hurt: no terrain, no `SurfacePartition`, a warm
+deep tropical column rather than a shallow capped boundary layer. `--nancheck` is in the driver from
+the start, reporting every bad field with distinct column counts and level ranges rather than a
+column-major `first(findall)`.
 
-Relevant differences here that may help or hurt: no terrain, no `SurfacePartition`, warm deep
-tropics rather than a shallow capped boundary layer, and **Oceananigans 0.112's bounded WENO**,
-which Greg specifically wants and which we have not yet tried. It is plausible the ENA failure was
-configuration-specific; it is not safe to assume so. **The NaN localiser (`--nancheck`) goes into
-the TC driver from the start**, and L1 at 3 km is the first place to watch.
+### 4.3 Restart — the missing method found and written; the test is the real work
 
-### 4.3 No restart support — required by the ladder, does not exist
+The gap was one level lower than it looked. `prognostic_state` resolves cleanly through
+`Simulation` → `EarthSystemModel` → `NestedModel`, and then falls through the universal fallback
+`prognostic_state(obj) = obj` **at the Breeze `AtmosphereModel`, which defines neither method**. So
+the checkpointer would be asked to serialize an entire model and pickup would raise a `MethodError`.
 
-`run_hindcast.jl` has no `Checkpointer` and no pickup path. The whole refinement strategy depends
-on restarting a finer grid from a coarser saved state, which additionally needs **interpolation
-between grids**, not just a checkpoint reload. This is the largest piece of new code in the project
-and it is on the critical path from L1 onward.
+`~/tc_hindcast/breeze_checkpointing.jl` supplies the two methods, taking the state from Breeze's own
+`prognostic_fields(model)` so that changing microphysics or adding a closure changes what is
+checkpointed without the patch knowing. Both Breeze timesteppers return `nothing`, on the claim that
+`U⁰`, `Gⁿ` and the acoustic substepper's perturbation fields are intra-step scratch.
+
+That claim is tested, not asserted: `restart_round_trip.jl` runs the same coarse nest three ways —
+continuous for 2n steps, stopped at n with a checkpoint, and picked up from that checkpoint — and
+compares the two end states field by field. The pass condition is **exact** equality, since it is
+identical arithmetic on identical inputs.
+
+Cross-grid restart is a further step: `regrid!` conserves Center fields on spherical grids to
+2.8 × 10⁻¹⁵ but throws on XFace momentum, so momentum transfer between stages needs its own strategy.
+
+### 4.4 AIVA is not usable on the current pin — new, and it reorders §5
+
+Greg asked for AIVA and for Oceananigans 0.112's bounded WENO. A dispatch probe found that on the
+pinned revision, bounded WENO and AIVA do not compose: the bounded-WENO method is the more specific
+one and wins, so **the AIVA timestep update is silently skipped**. Oceananigans 0.112 (#5933)
+restructures `update_advection!` to call both. Since every water mass carries `bounds = (0, 1)`,
+enabling AIVA on this pin would disable exactly the update it needs on exactly the fields we care
+about most.
+
+A blind 0.112 bump is also wrong. The pinned revision carries two Float32 protections absent from
+the tagged 0.112 source: the lower limiter denominator's minus-epsilon guard against 0/0 at tiny
+undershoots, and a ZWENO weight-ratio cap against Float32 overflow — the same class of protection as
+the failure mode in §4.2. Losing them while changing the limiter's structure would make any new
+Float32 failure uninterpretable.
+
+So: **L0 runs on the current pin with explicit WENO and no AIVA**, which is a correctness decision
+rather than a schedule one, and 0.112 is prepared in isolation carrying both protections forward,
+gated on bounded+AIVA dispatch and positivity/conservation tests before AIVA is enabled anywhere.
 
 ## 5. Order of work
 
-1. **ERA5 acquisition** for 27 Sep 18 UTC – 30 Sep 06 UTC over 57–33°W × 11–35°N (a padded box),
-   pressure levels plus SST and surface fields. The CDS credential works.
-2. **A TC driver** adapted from `run_hindcast.jl`: prescribed ocean only, no land, no terrain,
-   1M microphysics, TKE closure, `--nancheck` available, Oceananigans 0.112 bounded WENO.
-3. **L0 at 6 km, Float32**, 48 h. The baseline, and the first test of whether Float32 survives a
+1. **ERA5 pre-stage** for 26 Sep 12 UTC – 30 Sep 00 UTC: the nine pressure-level variables the
+   nested parent requests, over the padded parent box, plus surface pressure, SST and skin
+   temperature over the child box, through the batched `Downloads.download(::MetadataSet)` backend.
+   The window starts 36 h before the nominal L0 start so finer stages can branch earlier than L0
+   does rather than chasing a peak L0 has already passed.
+2. **L0 at 6 km, Float32, 48 h** — the baseline, and the first test of whether Float32 survives a
    deep tropical convective case at all.
-4. **Checkpoint and cross-grid restart**, written and tested between L0 and L1 — the enabling
-   capability, and worth doing carefully because everything downstream uses it.
-5. **L1 at 3 km**, the first resolution at which ENA's Float32 failure appeared.
-6. **AIVA** evaluated at L1: its sedimentation-Courant relief is worth more here than at ENA,
-   because a TC has heavy rain and the explicit fall-speed bound will pin the step.
-7. L2/L3 only once the MPI question in §4.1 is resolved.
+3. **Same-grid restart qualified** by the round-trip test above, then **cross-grid transfer**.
+4. **NCCL halo validation** on 2 then 4 GPUs, then **L1 at 3 km** — the first resolution at which
+   ENA's Float32 failure appeared.
+5. **Perlmutter staging and a first benchmark**, in parallel with the local ladder rather than after
+   it, since the 4° × 4° stages were never going to run here.
+6. **0.112 in isolation**, carrying both Float32 protections, then AIVA behind its dispatch and
+   conservation tests. AIVA's sedimentation-Courant relief is worth more in a cyclone than at ENA —
+   the measured horizontal advective timescale is 300 s against 4.918 s for the built-in automatic
+   scan at Δx 3 km, Δz 50 m, u 10 m/s, rain fall speed −10 m/s, a factor of 61 — which is exactly
+   why it must be qualified rather than switched on.
 
-## 6. Open questions for Greg
+## 6. Answers to the questions this plan opened
 
-- Vertical grid: ENA used 40 m to 2 km for a stratocumulus deck. A TC needs the full depth and a
-  well-resolved inflow layer; I propose ~50 m near the surface stretching to ~500 m aloft with a
-  20 km top, but this drives both cost and the Float32 risk and is worth agreeing early.
-- Prescribed SST from ERA5 hourly skin temperature, or a fixed climatological field? Hourly ERA5
-  gives the storm no cold wake, which matters for a 48 h intensification study. The prognostic
-  ocean Greg mentions as a future goal is exactly the fix.
+**Vertical grid.** Resolved by removing the question rather than answering it with a number. The
+driver exposes the spacing that generates the mesh — `--dz` (surface spacing, default 50 m),
+`--dz-constant-extent` (1000 m), `--dz-max` (500 m), `--stretching` (0.06 per cell), `--ztop`
+(22 km) — and takes `Nz = length(z)`. A bare level count is no longer accepted, because one that
+disagreed with the spacing would either fail in the grid constructor or, worse, silently describe a
+different atmosphere. All five values are recorded in each run's `provenance.toml` alongside the
+resulting `Nz`, so a stage's vertical resolution is documented as the spacing that produced it.
+
+**SST.** ERA5 hourly sea-surface temperature, streamed three time levels at a time rather than
+cached, over the child box. It gives the storm no cold wake, which is a real limitation for a 48 h
+intensification study — Lorenzo's own upwelling would cool the surface beneath it and damp the
+intensification we are trying to reproduce. The prognostic ocean Greg named as a future goal is
+exactly the fix, and this is the diagnostic that will show whether it matters.
