@@ -120,9 +120,15 @@ transport/p2p.cc:290 (ncclP2pImportShareableBuffer) NCCL WARN Cuda failure 101 '
 
 The devices really are distinct — a UUID check passes — which is what makes it confusing. Each task
 must see every GPU on the node; Oceananigans then assigns `device!(node_rank % ndevices)` itself.
-With that removed, the 2-rank halo exchange is **bitwise exact** at Center, XFace and YFace
-locations, including the asynchronous deferred-unpack path with three fields in flight (job 1092).
-The 4-rank run, which is the first to exercise corners, is queued.
+With that removed, the halo exchange is **bitwise exact** at Center, XFace and YFace locations,
+including the asynchronous deferred-unpack path with three fields in flight — on 2 ranks (job 1092)
+and on 4 ranks in a 2 × 2 partition (job 1094), where each rank also exchanges a diagonal corner.
+The test poisons every halo with NaN and predicts each cell from its GLOBAL INDEX, so a skipped
+exchange leaves NaN rather than a plausible number and a mis-assembled corner is an O(1) error;
+predicting from coordinates instead would have forced a tolerance, because two ranks can round a
+node position differently in the last bit.
+
+What remains untested is a real model step under NCCL, which the ladder reaches at L2.
 
 The same check belongs in the Perlmutter readiness list as a named test rather than an assumption:
 it presents as a CUDA error in the middle of the first exchange, not as a setup failure.
