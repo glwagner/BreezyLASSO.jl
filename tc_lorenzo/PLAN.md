@@ -108,7 +108,24 @@ entirely. `NCCLDistributed(GPU(); partition = Partition(x, y))` provides
 the MPI handle the NCCL communicator carries. NERSC supports NCCL over Slingshot through
 `nccl-plugin`, so the same path carries to Perlmutter.
 
-The driver takes `--arch nccl --ranks px,py`. Halo validation on 2 and 4 GPUs is pending hardware.
+The driver takes `--arch nccl --ranks px,py`.
+
+**One trap, found by testing rather than by reading.** The exchange still failed until the Slurm
+binding was fixed. With `--gpus-per-task=1` each rank gets a cgroup holding one GPU, so every rank
+sees `ndevices == 1` and calls `device!(0)`, and NCCL's peer-to-peer IPC import fails **mid-run**:
+
+```
+transport/p2p.cc:290 (ncclP2pImportShareableBuffer) NCCL WARN Cuda failure 101 'invalid device ordinal'
+```
+
+The devices really are distinct — a UUID check passes — which is what makes it confusing. Each task
+must see every GPU on the node; Oceananigans then assigns `device!(node_rank % ndevices)` itself.
+With that removed, the 2-rank halo exchange is **bitwise exact** at Center, XFace and YFace
+locations, including the asynchronous deferred-unpack path with three fields in flight (job 1092).
+The 4-rank run, which is the first to exercise corners, is queued.
+
+The same check belongs in the Perlmutter readiness list as a named test rather than an assumption:
+it presents as a CUDA error in the middle of the first exchange, not as a setup failure.
 
 ### 4.2 Float32 at fine resolution — OPEN, unchanged
 
@@ -146,24 +163,57 @@ identical arithmetic on identical inputs.
 Cross-grid restart is a further step: `regrid!` conserves Center fields on spherical grids to
 2.8 × 10⁻¹⁵ but throws on XFace momentum, so momentum transfer between stages needs its own strategy.
 
-### 4.4 AIVA is not usable on the current pin — new, and it reorders §5
+### 4.4 AIVA is not usable, on this pin OR on 0.112 — new, and it reorders §5
 
-Greg asked for AIVA and for Oceananigans 0.112's bounded WENO. A dispatch probe found that on the
-pinned revision, bounded WENO and AIVA do not compose: the bounded-WENO method is the more specific
-one and wins, so **the AIVA timestep update is silently skipped**. Oceananigans 0.112 (#5933)
-restructures `update_advection!` to call both. Since every water mass carries `bounds = (0, 1)`,
-enabling AIVA on this pin would disable exactly the update it needs on exactly the fields we care
-about most.
+Greg asked for AIVA and for Oceananigans 0.112's bounded WENO. Four separate findings say no, and
+the last of them is a bug rather than a configuration problem.
 
-A blind 0.112 bump is also wrong. The pinned revision carries two Float32 protections absent from
+**On the current pin, AIVA is a silent no-op with bounded WENO.** A dispatch probe shows the
+bounded-WENO `update_advection!` method is the more specific one and wins, so the AIVA timestep
+update never runs: the probe measures `dt = 0.0` after an update that requested 0.125. Oceananigans
+0.112 (#5933) restructures the call so both run, and measures 0.125. Since every water mass carries
+`bounds = (0, 1)`, enabling AIVA on this pin disables exactly the update it needs on exactly the
+fields we care about most.
+
+**A blind 0.112 bump is also wrong.** The pinned revision carries two Float32 protections absent from
 the tagged 0.112 source: the lower limiter denominator's minus-epsilon guard against 0/0 at tiny
 undershoots, and a ZWENO weight-ratio cap against Float32 overflow — the same class of protection as
 the failure mode in §4.2. Losing them while changing the limiter's structure would make any new
-Float32 failure uninterpretable.
+Float32 failure uninterpretable. A preservation patch exists and passes `git apply --check` against
+the tag, unapplied.
 
-So: **L0 runs on the current pin with explicit WENO and no AIVA**, which is a correctness decision
-rather than a schedule one, and 0.112 is prepared in isolation carrying both protections forward,
-gated on bounded+AIVA dispatch and positivity/conservation tests before AIVA is enabled anywhere.
+**And on 0.112 itself, bounded + AIVA is unsound.** `bounded_tracer_flux_divergence_z` reads the raw
+face velocities and never applies AIVA's `explicit_velocity_scale`, which Breeze's bounded `div_ρUc`
+calls directly. Measured on the tagged implementation at Δz 1 m, Δt 1 s, explicit CFL 0.1, total
+w = −10 m/s, on a smooth tracer whose limiter is one:
+
+| operator | explicit flux relative to fully explicit |
+|---|---:|
+| ordinary WENO + AIVA | 0.0100 |
+| bounded WENO + AIVA | **1.0** |
+| required | 0.01 |
+
+One forward-Euler explicit stage then takes an outlet cell of a pulse bounded in [0, 1] from
+**1 to −9**, where ordinary AIVA takes it to 0.9 — a bounds-preserving scheme producing a value nine
+times outside its own bounds.
+
+**The implicit half never sees the fall speed either.** The explicit tendency forms
+`sum_of_velocities(velocities, microphysical_velocities(…))`, but `scalar_substep!` hands
+`tendency_transport_velocities(model)` to every species' `implicit_step!` and SSP-RK3 passes the
+resolved velocities unchanged. With resolved w = 0 and a 10 m/s fall speed the correct implicit
+remainder is −9.9 and the supplied one is 0; with a +12 updraft against the same fall speed it is
++1.9 against +11.9. So the two halves of the split do not transport the same thing.
+
+The consequence for this plan is concrete: the **sedimentation CFL is a real constraint**, not a
+conservatism to be removed, and L0's step is set by it — τ ≈ Δz / fall speed ≈ 5 s at Δz 50 m, so
+the wizard at a summed-Courant target of 0.25 settles near Δt ≈ 1.25 s, roughly 138,000 steps for
+48 h. **No AIVA speedup is in any budget in this plan.**
+
+AIVA is therefore a four-gate item: #5933's dispatch fix, both Float32 protections preserved,
+bounded vertical fluxes routed through a conservative AIVA velocity split with each species' total
+velocity supplied to its implicit solve, and only then a timescale change — with the summed explicit
+Courant budget respected, since dropping the vertical term from the wizard does not make AIVA's
+explicit vertical fraction vanish.
 
 ## 5. Order of work
 
