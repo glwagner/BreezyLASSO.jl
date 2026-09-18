@@ -48,6 +48,11 @@ haskey(opts, "lasso_grid") && opts["lasso_grid"] == "true" && (kw[:z_faces] = la
 haskey(opts, "moment_advection") && (kw[:moment_advection] = Symbol(opts["moment_advection"]))
 haskey(opts, "formulation") && (kw[:formulation] = Symbol(opts["formulation"]))   # LiquidIcePotentialTemperature (default) or StaticEnergy
 haskey(opts, "profile_interval") && (kw[:profile_interval] = parse(Float64, opts["profile_interval"]))
+if haskey(opts, "closure")
+    opts["closure"] in ("none", "smagorinsky_lilly") ||
+        throw(ArgumentError("closure must be none or smagorinsky_lilly"))
+    kw[:closure] = opts["closure"] == "none" ? nothing : :smagorinsky_lilly
+end
 haskey(opts, "slice_interval") && (kw[:slice_interval] = parse(Float64, opts["slice_interval"]))
 
 microphysics_label = get(opts, "microphysics", preset === :lasso_ena_official ? "p3_aer2" : "p3_n75")
