@@ -287,7 +287,7 @@ end
 
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::LargeScaleEnergyForcing,
                                                                field, name, model_field_names, context::NamedTuple)
-    name === :s || throw(ArgumentError("LargeScaleEnergyForcing must be supplied under the `s` key, got $name"))
+    name ∈ (:E, :s) || throw(ArgumentError("LargeScaleEnergyForcing must be supplied under the energy key `E` (or `s`), got $name"))
     # The scheme's lookup tables must live on the device, as Breeze does for model.microphysics
     microphysics = on_architecture(architecture(field.grid), f.microphysics)
     return LargeScaleEnergyForcing(f.tls, f.qls, microphysics, f.thermodynamic_constants,
@@ -485,7 +485,7 @@ end
 
 function AtmosphereModels.materialize_atmosphere_model_forcing(f::UpperBoundaryEnergyRelaxation,
                                                                field, name, model_field_names, context::NamedTuple)
-    name === :s || throw(ArgumentError("UpperBoundaryEnergyRelaxation must be supplied under the `s` key, got $name"))
+    name ∈ (:E, :s) || throw(ArgumentError("UpperBoundaryEnergyRelaxation must be supplied under the energy key `E` (or `s`), got $name"))
     FT = eltype(field.grid)
     microphysics = on_architecture(architecture(field.grid), f.microphysics)
     return UpperBoundaryEnergyRelaxation(f.target, f.moisture_target, microphysics, f.thermodynamic_constants,

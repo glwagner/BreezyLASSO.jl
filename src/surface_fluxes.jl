@@ -71,7 +71,7 @@ end
                                                 surface_density, moisture_name,
                                                 temperature_neutral_evaporation=true)
 
-Bottom boundary conditions for `ρu`, `ρv`, `ρs` and the moisture density from the SAM
+Bottom boundary conditions for `ρu`, `ρv`, the energy key `ρE` and the moisture density from the SAM
 `sfc` time series: energy flux H(t) [+ (cᵖᵛ - cᵖᵈ) SST(t) E(t)], vapor flux E = LE/ℒ, and a
 horizontally uniform stress of kinematic magnitude τ(t) aligned with the domain-mean
 lowest-level wind (updated by [`PrescribedStressUpdater`](@ref)). Returns
@@ -111,13 +111,13 @@ function prescribed_surface_flux_boundary_conditions(grid, sfc::SAMSurfaceForcin
     τʸ = Field{Center, Face, Nothing}(grid)
     ρu_bc = FluxBoundaryCondition(τˣ)
     ρv_bc = FluxBoundaryCondition(τʸ)
-    ρs_bc = FluxBoundaryCondition(energy_flux)
+    ρE_bc = FluxBoundaryCondition(energy_flux)
     ρq_bc = FluxBoundaryCondition(vapor_flux)
 
     moisture_density_name = Symbol("ρ", moisture_name)
     bcs = (; ρu = FieldBoundaryConditions(bottom=ρu_bc),
              ρv = FieldBoundaryConditions(bottom=ρv_bc),
-             ρs = FieldBoundaryConditions(bottom=ρs_bc))
+             ρE = FieldBoundaryConditions(bottom=ρE_bc))
     bcs = merge(bcs, NamedTuple{(moisture_density_name,)}((FieldBoundaryConditions(bottom=ρq_bc),)))
     stress = (; τˣ, τʸ, times, kinematic_stress = FT.(sfc.kinematic_stress), surface_density = ρ₀,
                 frame_velocity = (FT(frame_velocity[1]), FT(frame_velocity[2])))
@@ -163,12 +163,12 @@ function bulk_surface_flux_boundary_conditions(grid, surface_temperature; moistu
     coefficient = PolynomialCoefficient(; roughness_length)
     ρu_bc = BulkDrag(; coefficient, gustiness, surface_temperature)
     ρv_bc = BulkDrag(; coefficient, gustiness, surface_temperature)
-    ρs_bc = BulkSensibleHeatFlux(; coefficient, gustiness, surface_temperature)
+    ρE_bc = BulkSensibleHeatFlux(; coefficient, gustiness, surface_temperature)
     ρq_bc = BulkVaporFlux(; coefficient, gustiness, surface_temperature)
     moisture_density_name = Symbol("ρ", moisture_name)
     bcs = (; ρu = FieldBoundaryConditions(bottom=ρu_bc),
              ρv = FieldBoundaryConditions(bottom=ρv_bc),
-             ρs = FieldBoundaryConditions(bottom=ρs_bc))
+             ρE = FieldBoundaryConditions(bottom=ρE_bc))
     return merge(bcs, NamedTuple{(moisture_density_name,)}((FieldBoundaryConditions(bottom=ρq_bc),)))
 end
 

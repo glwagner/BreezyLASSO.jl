@@ -3,7 +3,10 @@
 Reproducing the LASSO-ENA large-eddy-simulation protocol with [Breeze.jl](https://github.com/NumericalEarth/Breeze.jl)
 for the closed-cell stratocumulus case of **18 July 2017** at the ARM Eastern North Atlantic site.
 
-> **Status (5 September 2026).** The official LASSO-ENA `samin` archive (restricted; free ARM
+> **Status (28 September 2026).** The dependency stack now carries Breeze PR 959 (sedimentation
+> carries condensate enthalpy) and the current P3 on Breeze `main`; the runs in `results/`
+> predate it and are to be repeated on the new pins (see *Rerunning on the PR 959 stack*).
+> The official LASSO-ENA `samin` archive (restricted; free ARM
 > account) is not yet in the workspace. Every run reported here is driven by the *public*
 > Covert, Mechem & Zhang (2022) SAM input files and is labelled a **Covert-public-bin
 > development benchmark**, not an official LASSO-ENA reproduction. The official preset
@@ -35,20 +38,25 @@ commit `12d02446a2147388dc89d828e6e0553106abea0f`, 2025-10-24), file by file:
 | `setperturb.f90` case 5 (±0.1 K, ±0.025 g kg⁻¹ below 600 m, one draw per cell) | `perturbation_array`: one deterministic host array reused for T and vapor |
 
 Microphysics is staged as **1M-control → P3-N75 → P3-aer2** (`microphysics = :one_moment`,
-`:p3_n75`, `:p3_aer2`), all using the complete P3 implementation on Breeze `origin/main`.
+`:p3_n75`, `:p3_aer2`), all using the complete P3 implementation on Breeze `main`. Since Breeze
+PR 1011 an `AerosolActivation` holds a fixed aerosol population unless built with
+`prognostic = true`; P3-aer2 asks for the depleting reservoir `ρnᵃ` (the SBM's behaviour, and
+what `DiagnosticCCNProjection` acts on), recorded as `prognostic_aerosol = true` in provenance.
 
 ### Sedimentation must carry its energy (P3-N75 surface runaway)
 
-On the pinned Breeze `main`, sedimentation moves condensate mass but not its static-energy
-content (Breeze PR 959 describes the same defect); rain piling into the surface cell warmed it
-by ℒ Δqʳ/cᵖ and the P3-N75 GPU smoke test ran away to T > 320 K within minutes of drizzle
-onset (isolated with `scripts/p3_runaway_probe.jl`: hot cell at k = 1, Δs ≈ 0 while qʳ jumped).
-`SedimentationEnthalpyForcing` adds, for every sedimenting prognostic condensate, the
-divergence of `h · [Φ(w + w_fall, q) − Φ(w, q)]` with the tracer's own advection scheme
-(mirroring the bounds-preserving limiter when that scheme is used), each flux carrying the
-content `h = ∂s/∂q|_T = (cˣ − cᵖᵈ) T − ℒˣ` of its donor cell; a rain shaft crossing an isothermal saturated
-column now leaves T unchanged to 5 mK (test), versus ±1.7 K without it. It is on by default
-(`sedimentation_enthalpy = true`) and recorded in provenance; PR 959 will supersede it.
+Before Breeze PR 959, sedimentation moved condensate mass but not its static-energy content;
+rain piling into the surface cell warmed it by ℒ Δqʳ/cᵖ and the P3-N75 GPU smoke test ran
+away to T > 320 K within minutes of drizzle onset (isolated with `scripts/p3_runaway_probe.jl`:
+hot cell at k = 1, Δs ≈ 0 while qʳ jumped). Until 28 September 2026 this package supplied the
+missing flux itself (`SedimentationEnthalpyForcing` on `ρs`, `sedimentation_enthalpy = true` in
+the provenance of every earlier run). PR 959 ("Unify sedimentation transport and correct
+condensate thermal coupling") now does this inside Breeze for every formulation, so the
+forcing has been removed (keeping it would count the flux twice). The rain-shaft test is kept
+against Breeze's own coupling: a shaft crossing an isothermal saturated column leaves T
+unchanged to 0.05 K in both the static-energy and the potential-temperature formulation, and
+cold rain entering warmer air cools it. Provenance records
+`sedimentation_thermal_coupling = "Breeze (PR 959) …"`.
 
 ### Bounds-preserving WENO is not conservative where its limiter fires
 
@@ -145,8 +153,10 @@ configuration (with or without forcing, either initialization, any Δt): advecti
 sedimentation leave positive but subnormal cloud mass in cloud-free cells while the DSD
 diagnosis floors the droplet number above zero, so `Nᶜˡ / (ρ qᶜˡ)` overflows to `Inf` and
 `Inf × 0 = NaN` enters the number tendency. The generic fix (threshold the quotient at
-`minimum_mass_mixing_ratio`, plus a Float32/Float64 regression test) lives on the Breeze
-branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins.
+`minimum_mass_mixing_ratio`, plus a Float32/Float64 regression test) was first carried on the
+Breeze branch `glw/p3-subnormal-cloud-mass` (`0f4ffac`). Breeze `main` still divides with
+`safe_divide`, which guards only an exactly zero denominator, so the fix is carried forward on
+the current pin (see *Dependency notes*).
 
 ### Dependency notes
 
@@ -154,18 +164,40 @@ branch `glw/p3-subnormal-cloud-mass` (commit `0f4ffac`), which this package pins
   the adaptive-implicit vertical advection (`AdaptiveImplicitVerticalAdvection`) whose
   sedimentation coupling is corrected in Breeze PR 964 is **not** exercised here, so that fix
   is not required for these runs. Switching to AIVA would require rebasing onto PR 964 first.
-- Oceananigans is pinned by `[sources]` to the branch `glw/weno-z-float32-overflow` (commit
-  `c78eeaa`, still versioned 0.111.0): `main` at `67a2204` (per-cell bounds-preserving
-  limiter, renamed `update_advection!` contract) plus the Float32 WENO-Z weight cap and the limiter 0/0 fix described
-  above. Breeze is pinned to the branch `glw/lasso-ena-ocmain`
-  (commit `a7fa3c8`), which stacks that contract (a per-scalar limiter refresh on the specific
-  fields Breeze advects, the acoustic stepper's split time step as an
-  `adaptive_advection_timestep` method) on top of the P3 subnormal-cloud fix of
-  `glw/p3-subnormal-cloud-mass`, plus three fixes found in the ENA hindcast: the prescribed-Nᶜˡ
-  homogeneous-freezing number reset (`29048ce`), terminal velocities in the advection
-  timescale (`d7cac2f`), and the microphysics moved to the device before the energy-flux
-  boundary conditions of the potential-temperature formulation capture it (`a7fa3c8`).
-  Both revisions are recorded in every provenance file.
+- Pins (28 September 2026). Oceananigans is pinned by `[sources]` to the branch
+  `glw/ena-fixes-0.113.3` (commit `847e125`): release 0.113.3 plus the Float32 WENO-Z weight cap
+  and the limiter 0/0 fix described above, rebased from the earlier branch
+  `glw/weno-z-float32-overflow` (`c78eeaa`). Neither fix is upstream yet (the 0/0 fix is
+  Oceananigans PR 6037); both regression tests pass on the new base and the WENO-Z one fails
+  without the cap. The per-cell limiter and the `update_advection!` contract that the old
+  Breeze branch had to add are now in the released Oceananigans and in Breeze `main`.
+  Breeze is pinned to the branch `glw/lasso-ena-pr959` (commit `5264d3c`): the head of PR 959
+  (`cc004bc`, two CI-only commits behind `main` at `438e50f`, so it carries the current P3,
+  including PR 1011's aerosol decoupling) plus the four ENA fixes that `main` still lacks:
+  the P3 subnormal-cloud guard (`16c8e0e`, `304bef8`), the prescribed-Nᶜˡ homogeneous-freezing
+  number re-diagnosis (`14da778`), the microphysics moved to the device before the boundary
+  conditions capture it (`b633386`), and terminal velocities in the advection timescale
+  (`5264d3c`; relevant only to adaptive stepping). Both revisions are recorded in every
+  provenance file. The runs in `results/` were made on Breeze `a7fa3c8` / `5fc404c` and
+  Oceananigans `c78eeaa` / `877618e`, as their provenance records.
+- Interface changes followed from Breeze `main`: `ReferenceState(...; base_pressure)` (was
+  `surface_pressure`), energy flux boundary conditions under `ρE` and energy forcings under `E`
+  (the `ρs`/`s` alias of the potential-temperature model is gone; static energy keeps `s`), and
+  prescribed energy fluxes divided by the Exner function in the θ formulation (PR 1020; Π ≈ 1
+  at this sea-level surface). Oceananigans 0.113's `JLD2Writer` takes `overwrite_files`.
+
+### Rerunning on the PR 959 stack
+
+The six members of the last production set (`*_posmom_s60_theta`) rerun unchanged apart from
+the pins, with a new output tag:
+
+```sh
+MOMENTS=positive SLICE_INTERVAL=60 TAG=theta_pr959 scripts/production_runs.sh
+GRID=lasso MOMENTS=positive SLICE_INTERVAL=60 TAG=theta_pr959 scripts/production_runs.sh
+```
+
+The first job on a compute node precompiles the new Manifest into `~/.julia-compute`;
+`sbatch scripts/smoke_tests_gpu.sbatch` is the cheap GPU check to run first.
 
 ## Layout
 

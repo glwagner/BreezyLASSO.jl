@@ -1,7 +1,7 @@
 # Probe the P3-N75 GPU/Float32 blow-up seen in the smoke tests: run the 32²×260 cloudy stage with
 # per-minute diagnostics and report the first non-finite prognostic.
 #   julia --project scripts/p3_stability_probe.jl <cpu|gpu> <Float32|Float64> <max_dt> [minutes] [microphysics] [off-switches]
-# off-switches: comma-separated subset of vadv,thermo,nudging,sponge,geo,upper,radiation,surface,closure,enthalpy
+# off-switches: comma-separated subset of vadv,thermo,nudging,sponge,geo,upper,radiation,surface,closure
 # PROBE_GRID=covert selects the 192-level Covert grid (10 m to 1.5 km) instead of the 260-level LASSO grid
 using BreezyLASSO, Breeze, Oceananigans, Oceananigans.Units, CUDA, Printf, Statistics
 using Oceananigans.Grids: zspacings
@@ -30,7 +30,6 @@ switches = Dict{Symbol, Any}()
 "radiation" ∈ off && (switches[:radiation] = nothing)
 "surface" ∈ off && (switches[:surface] = nothing)
 "closure" ∈ off && (switches[:closure] = nothing)
-"enthalpy" ∈ off && (switches[:sedimentation_enthalpy] = false)
 get(ENV, "PROBE_MOMENTS", "plain") == "positive" && (switches[:moment_advection] = :positive)
 scheme === :p3_aer2 && !endswith(scheme_arg, "_noproj") && (switches[:aerosol_replenishment] = :diagnostic_ccn)
 println("off switches: ", off, "  scheme: ", scheme_arg)

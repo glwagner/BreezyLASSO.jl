@@ -4,7 +4,7 @@
 # state in Float32 and Float64 so a precision-specific overflow shows up directly.
 #   julia --project scripts/p3_float32_first_step_probe.jl [Float32|Float64] [dt] [microphysics] [off-switches]
 # off-switches: comma-separated subset of vadv,thermo,nudging,sponge,geo,upper,radiation,surface,
-# closure,enthalpy,proj (proj = no diagnostic-CCN projection), or "all" for every one of them.
+# closure,proj (proj = no diagnostic-CCN projection), or "all" for every one of them.
 using BreezyLASSO, Breeze, Oceananigans, Oceananigans.Units, Printf
 using Breeze.AtmosphereModels: AtmosphereModels as AM
 using Breeze.Thermodynamics: StaticEnergyState, MoistureMassFractions, ThermodynamicConstants
@@ -14,7 +14,7 @@ FT = length(ARGS) ≥ 1 && ARGS[1] == "Float64" ? Float64 : Float32
 Δt = length(ARGS) ≥ 2 ? parse(Float64, ARGS[2]) : 0.5
 scheme = length(ARGS) ≥ 3 ? Symbol(ARGS[3]) : :p3_aer2
 off = length(ARGS) ≥ 4 ? split(ARGS[4], ",") : String[]
-"all" ∈ off && (off = ["vadv", "thermo", "nudging", "sponge", "geo", "upper", "radiation", "surface", "closure", "enthalpy", "proj"])
+"all" ∈ off && (off = ["vadv", "thermo", "nudging", "sponge", "geo", "upper", "radiation", "surface", "closure", "proj"])
 data = joinpath(@__DIR__, "..", "data", "covert2022_bin")
 
 switches = Dict{Symbol, Any}()
@@ -27,7 +27,6 @@ switches = Dict{Symbol, Any}()
 "radiation" ∈ off && (switches[:radiation] = nothing)
 "surface" ∈ off && (switches[:surface] = nothing)
 "closure" ∈ off && (switches[:closure] = nothing)
-"enthalpy" ∈ off && (switches[:sedimentation_enthalpy] = false)
 scheme === :p3_aer2 && "proj" ∉ off && (switches[:aerosol_replenishment] = :diagnostic_ccn)
 println("off switches: ", off)
 case = lasso_ena_simulation(data; preset=:covert_public_bin, arch=CPU(), FT, Nx=8, Ny=8, Lx=280, Ly=280,

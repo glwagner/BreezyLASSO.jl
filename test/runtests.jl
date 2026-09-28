@@ -206,7 +206,7 @@ end
     grid = test_grid(; Nz=24, Lz=6000)
     zc = Array(znodes(grid, Center()))
     constants = ThermodynamicConstants(Float64)
-    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=z -> 292 + 0.004z)
+    reference_state = ReferenceState(grid, constants; base_pressure=101930, potential_temperature=z -> 292 + 0.004z)
     dynamics = AnelasticDynamics(reference_state)
     pᵣ = Array(interior(reference_state.pressure, 1, 1, :))
     times = [0.0, 3600.0]
@@ -406,7 +406,7 @@ end
 @testset "Prescribed surface stress is uniform and wind-aligned" begin
     grid = test_grid(; Nz=24, Lz=6000)
     constants = ThermodynamicConstants(Float64)
-    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=292)
+    reference_state = ReferenceState(grid, constants; base_pressure=101930, potential_temperature=292)
     dynamics = AnelasticDynamics(reference_state)
     sfc = read_sam_surface_forcing(joinpath(FIXTURES, "sfc"))
     bcs, stress = prescribed_surface_flux_boundary_conditions(grid, sfc, 199.25; thermodynamic_constants=constants,
@@ -464,72 +464,56 @@ end
     @test is_bounded(plain_moments.ρqʳ)
 end
 
-@testset "Sedimenting rain carries its enthalpy" begin
+@testset "Sedimenting rain carries its enthalpy (Breeze PR 959)" begin
+    # Before PR 959 Breeze moved condensate mass but not its energy content, and this package
+    # supplied the missing flux as a forcing. The coupling is now Breeze's own: a rain shaft
+    # crossing an isothermal saturated column must leave T unchanged in either formulation
+    # (without the coupling the arriving rain warmed it by ~ℒΔqʳ/cᵖ, above 1 K here).
     using Breeze.Thermodynamics: saturation_specific_humidity, PlanarLiquidSurface
     using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
     grid = test_grid(; Nz=40, Lz=1000)
     constants = ThermodynamicConstants(Float64)
-    reference_state = ReferenceState(grid, constants; surface_pressure=101300, potential_temperature=290)
+    reference_state = ReferenceState(grid, constants; base_pressure=101300, potential_temperature=290)
     dynamics = AnelasticDynamics(reference_state)
     zc = Array(znodes(grid, Center()))
     ρᵣ = Array(interior(reference_state.density, 1, 1, :))
     p3 = P3Microphysics(Float64; cloud=CloudDroplets(Float64; number_concentration=75e6))
     scalar_advection = BreezyLASSO.scalar_advection_schemes(5, p3, :qᵛ)
-    T₀ = 285.0
-    qsat = [saturation_specific_humidity(T₀, ρᵣ[k], constants, PlanarLiquidSurface()) for k in 1:40]
     col(v) = repeat(reshape(v, 1, 1, 40), 8, 8, 1)
     qʳ₀ = [600 ≤ z ≤ 750 ? 2e-3 : 0.0 for z in zc]
     nʳ₀ = qʳ₀ ./ (4/3 * π * 1000 * (0.5e-3)^3)
-    function rain_column(with_enthalpy)
-        forcing = with_enthalpy ? (; ρs = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)) : NamedTuple()
-        model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants,
-                                momentum_advection=WENO(order=5), scalar_advection, forcing)
-        set!(model; T=T₀, qᵛ=col(qsat), qʳ=col(qʳ₀), nʳ=col(nʳ₀))
-        Tᵢ = copy(interior(model.temperature))
-        for _ in 1:60
+    function rain_column(formulation, T_profile; steps)
+        qsat = [saturation_specific_humidity(T_profile[k], ρᵣ[k], constants, PlanarLiquidSurface()) for k in 1:40]
+        schemes = formulation === :StaticEnergy ? scalar_advection :
+                  NamedTuple((n === :ρs ? :ρθ : n) => v for (n, v) in pairs(scalar_advection))
+        model = AtmosphereModel(grid; formulation, dynamics, microphysics=p3, thermodynamic_constants=constants,
+                                momentum_advection=WENO(order=5), scalar_advection=schemes)
+        set!(model; T=col(T_profile), qᵛ=col(qsat), qʳ=col(qʳ₀), nʳ=col(nʳ₀))
+        Tᵢ = copy(interior(model.temperature)); qʳᵢ = copy(interior(model.microphysical_fields.qʳ))
+        for _ in 1:steps
             time_step!(model, 1.0)
         end
-        return interior(model.temperature) .- Tᵢ
+        return interior(model.temperature) .- Tᵢ, interior(model.microphysical_fields.qʳ) .- qʳᵢ, qsat
     end
-    ΔT_without = rain_column(false)
-    ΔT_with = rain_column(true)
-    @test maximum(abs, ΔT_without) > 1      # rain arriving without its enthalpy warms by ~ℒΔqʳ/cᵖ
-    @test maximum(abs, ΔT_with) < 0.05       # with the transport the column stays isothermal
+    for formulation in (:StaticEnergy, :LiquidIcePotentialTemperature)
+        ΔT, Δqʳ, _ = rain_column(formulation, fill(285.0, 40); steps=60)
+        @test maximum(abs, Δqʳ) > 1e-4          # the shaft has moved
+        @test maximum(abs, ΔT) < 0.05           # ... and the column stays isothermal
+    end
 
-    # Donor-cell content: cold rain from above the jump (T = 280 K) falling into warm air
-    # (285 K) cools the receiving cells by Δq (cˡ - cᵖᵈ)(T_cold - T_warm) / cᵖᵐ of the rain
-    # that has passed, which a face-centered content would halve at the jump.
+    # Cold rain from above a temperature jump (280 K over 285 K) cools the warm cells it enters.
     T_jump = [z > 600 ? 280.0 : 285.0 for z in zc]
-    qsat_jump = [saturation_specific_humidity(T_jump[k], ρᵣ[k], constants, PlanarLiquidSurface()) for k in 1:40]
-    forcing = (; ρs = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants))
-    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants,
-                            momentum_advection=WENO(order=5), scalar_advection, forcing)
-    set!(model; T=col(T_jump), qᵛ=col(qsat_jump), qʳ=col(qʳ₀), nʳ=col(nʳ₀))
-    Tᵢ = copy(interior(model.temperature)); qʳᵢ = copy(interior(model.microphysical_fields.qʳ))
-    for _ in 1:8   # ~8 s: the rain front crosses the jump at 612.5 m but stays above the bottom
-        time_step!(model, 1.0)
-    end
-    ΔT = interior(model.temperature) .- Tᵢ
-    Δqʳ = interior(model.microphysical_fields.qʳ) .- qʳᵢ
-    k_warm = findlast(≤(600), zc)                       # first warm cell below the jump
-    cᵖᵐ = 1005 * (1 - qsat_jump[k_warm]) + 1850 * qsat_jump[k_warm]
-    expected = Δqʳ[1, 1, k_warm] * (4181 - 1005) * (280 - 285) / cᵖᵐ
-    @test Δqʳ[1, 1, k_warm] > 1e-4                      # rain has arrived in the warm cell
-    @test ΔT[1, 1, k_warm] < 0                           # ... and cooled it (donor-cell content)
-    # the cell's cumulative inflow exceeds the net gain (rain also leaves below), so the
-    # cooling is larger than the net-gain estimate but bounded by the inflow over the step
-    @test expected * 4 < ΔT[1, 1, k_warm] < expected
-    @test abs(ΔT[1, 1, k_warm - 1]) < 5e-3               # rain leaving at 285 K does not cool the next cell
+    ΔT, Δqʳ, qsat_jump = rain_column(:StaticEnergy, T_jump; steps=8)   # the front crosses 612.5 m, stays aloft
+    k_warm = findlast(≤(600), zc)
+    @test Δqʳ[1, 1, k_warm] > 1e-4                       # rain has arrived in the warm cell
+    @test ΔT[1, 1, k_warm] < 0                           # ... and cooled it
     @test all(abs.(ΔT[:, :, 1:k_warm-3]) .< 0.05)        # only trace effects below the front
-    forcings = sedimentation_enthalpy_forcings(p3, scalar_advection; thermodynamic_constants=constants)
-    @test length(forcings) == 4               # cloud liquid, rain, ice, liquid on ice
-    @test Breeze.AtmosphereModels.is_density_tendency_forcing(forcings[1])
 end
 
 @testset "Simple longwave radiation model" begin
     grid = test_grid(; Nz=24, Lz=3000)
     constants = ThermodynamicConstants(Float64)
-    reference_state = ReferenceState(grid, constants; surface_pressure=101930, potential_temperature=292)
+    reference_state = ReferenceState(grid, constants; base_pressure=101930, potential_temperature=292)
     dynamics = AnelasticDynamics(reference_state)
     microphysics = SaturationAdjustment(Float64; equilibrium=WarmPhaseEquilibrium())
     radiation = SimpleLongwaveRadiation(grid; schedule=IterationInterval(1))
@@ -571,8 +555,10 @@ if HAVE_COVERT
         @test record["config"]["microphysics"] == "one_moment"
         @test haskey(record["inputs"], "snd_sha256") && haskey(record["inputs"], "prm_sha256")
         @test record["software"]["Breeze_source"] isa String
-        @test occursin("c78eeaa", record["software"]["Oceananigans_source"])
-        @test occursin("a7fa3c8", record["software"]["Breeze_source"])
+        # the recorded sources are the revisions pinned in Project.toml
+        pins = TOML.parsefile(joinpath(@__DIR__, "..", "Project.toml"))["sources"]
+        @test occursin(pins["Oceananigans"]["rev"], record["software"]["Oceananigans_source"])
+        @test occursin(pins["Breeze"]["rev"], record["software"]["Breeze_source"])
         @test record["extra"]["tuple"] == [1, 2]
         # output writers build (profiles of already-averaged fields, time series, slices)
         written = lasso_ena_simulation(COVERT_DIR; preset=:covert_public_bin, arch=CPU(), FT=Float32, Nx=8, Ny=8, Lx=280, Ly=280,

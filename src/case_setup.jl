@@ -19,7 +19,7 @@ using Oceananigans.Units
 using Oceananigans.Fields: interior
 using Oceananigans.Grids: znodes
 using Breeze
-using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets, AerosolActivation, AerosolMode
+using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets, AerosolActivation, AerosolMode, has_prognostic_aerosol
 using CloudMicrophysics: CloudMicrophysics
 using RRTMGP: RRTMGP
 using NCDatasets: NCDatasets
@@ -84,9 +84,9 @@ function build_microphysics(FT, scheme; droplet_number, surface_density, aerosol
     elseif scheme ∈ (:p3_aer1, :p3_aer2, :p3_aer3)
         setting = Symbol(string(scheme)[4:end])
         modes, conversion = lasso_aerosol_modes(FT; setting, reference_density=surface_density, aerosol_kwargs...)
-        aerosol = AerosolActivation(modes...)
+        aerosol = AerosolActivation(modes...; prognostic=true)   # depleting reservoir ρnᵃ, as the SBM's
         cloud = CloudDroplets(FT; number_concentration=droplet_number) # only the initial droplet number
-        return P3Microphysics(FT; cloud, aerosol), (; scheme, setting, conversion...)
+        return P3Microphysics(FT; cloud, aerosol), (; scheme, setting, prognostic_aerosol=true, conversion...)
     else
         throw(ArgumentError("unknown microphysics scheme $scheme"))
     end
@@ -207,7 +207,6 @@ function build_case(data_dir;
                               p3_initialization = :condensate_free,
                               initial_droplet_number = nothing,
                               aerosol_replenishment = nothing,
-                              sedimentation_enthalpy = true,
                               bounded_condensate_advection = nothing,
                               moment_advection = :positive,
                               formulation = :LiquidIcePotentialTemperature,
@@ -257,7 +256,7 @@ function build_case(data_dir;
     constants64 = ThermodynamicConstants(Float64)
 
     reference_state = ReferenceState(grid, constants;
-                                     surface_pressure = profiles.surface_pressure,
+                                     base_pressure = profiles.surface_pressure,   # z = 0 is the sea surface
                                      potential_temperature = z -> profiles(:θ, z),
                                      vapor_mass_fraction = z -> profiles(:qᵗ, z))
     dynamics = AnelasticDynamics(reference_state)
@@ -281,8 +280,9 @@ function build_case(data_dir;
     formulation ∈ (:LiquidIcePotentialTemperature, :StaticEnergy) ||
         throw(ArgumentError("formulation must be :LiquidIcePotentialTemperature or :StaticEnergy, got $formulation"))
     # The energy prognostic is ρθ (liquid-ice potential temperature) or ρs (static energy); the
-    # energy-based forcings and flux boundary conditions below are supplied under the `s`/`ρs`
-    # keys in both cases, which the potential-temperature model converts by 1/(cᵖᵐ Π).
+    # energy-based flux boundary conditions below are supplied under Breeze's energy key `ρE`,
+    # which the potential-temperature model converts by 1/(cᵖᵐ Π), and the energy forcings under
+    # its specific alias `E` (or `s` itself when static energy is prognostic).
     energy_name = formulation === :StaticEnergy ? :ρs : :ρθ
     scalar_advection = scalar_advection_schemes(advection_order, microphysics_model, moisture_name;
                                                 bounded_condensates=bounded_condensate_advection,
@@ -339,9 +339,11 @@ function build_case(data_dir;
     forcing[:u] = compact(geostrophic_forcing.u, nudging_u, vadv, sponge)
     forcing[:v] = compact(geostrophic_forcing.v, nudging_v, vadv, sponge)
     forcing[:w] = compact(sponge)
-    # Energy tendencies (tls, top relaxation) stay under `s`; the subsidence advects the model's own
-    # specific thermodynamic field, `s` for static energy and `θ` for potential temperature.
-    forcing[:s] = compact(thermodynamic.s, upper.s)
+    # Energy tendencies (tls, top relaxation) go under the energy key; the subsidence advects the
+    # model's own specific thermodynamic field, `s` for static energy and `θ` for potential temperature.
+    # Breeze refuses `E` and `s` together (one source named twice), so static energy uses `s` for both.
+    energy_key = formulation === :StaticEnergy ? :s : :E
+    forcing[energy_key] = compact(thermodynamic.s, upper.s)
     energy_specific = formulation === :StaticEnergy ? :s : :θ
     forcing[energy_specific] = (get(forcing, energy_specific, ())..., compact(vadv)...)
     forcing[moisture_name] = compact(thermodynamic[moisture_name], vadv, upper[moisture_name])
@@ -351,7 +353,8 @@ function build_case(data_dir;
             forcing[name] = (vadv,)
         end
     end
-    prognostic_aerosol = is_p3(microphysics_model) && !isnothing(microphysics_model.aerosol)
+    prognostic_aerosol = is_p3(microphysics_model) && !isnothing(microphysics_model.aerosol) &&
+                         has_prognostic_aerosol(microphysics_model.aerosol)
     if aerosol_replenishment isa Number
         prognostic_aerosol || throw(ArgumentError("aerosol_replenishment needs P3 with AerosolActivation"))
         n_initial = sum(mode.number_mixing_ratio for mode in microphysics_model.aerosol.modes)
@@ -361,10 +364,6 @@ function build_case(data_dir;
         prognostic_aerosol || throw(ArgumentError("aerosol_replenishment=:diagnostic_ccn needs P3 with AerosolActivation"))
     elseif !isnothing(aerosol_replenishment)
         throw(ArgumentError("aerosol_replenishment must be nothing, :diagnostic_ccn, or a relaxation timescale"))
-    end
-    if sedimentation_enthalpy
-        # Stand-in for Breeze PR 959: sedimenting condensate carries its static-energy content
-        forcing[:ρs] = sedimentation_enthalpy_forcings(microphysics_model, scalar_advection; thermodynamic_constants=constants)
     end
     forcing = NamedTuple(name => value for (name, value) in forcing if !isempty(value))
 
@@ -516,7 +515,8 @@ function build_case(data_dir;
                 exclude_subsurface_levels, temperature_neutral_evaporation,
                 perturbation=string(perturbation), p3_initialization=string(p3_initialization),
                 initial_droplet_number=something(initial_droplet_number, 0),
-                aerosol_replenishment=string(aerosol_replenishment), sedimentation_enthalpy, bounded_condensate_advection,
+                aerosol_replenishment=string(aerosol_replenishment), bounded_condensate_advection,
+                sedimentation_thermal_coupling="Breeze (PR 959): falling condensate carries its enthalpy",
                 moment_advection=string(moment_advection), formulation=string(formulation),
                 namelist_latitude=get(namelist, "latitude0", NaN),
                 microphysics_record...)
@@ -571,7 +571,7 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
 
     simulation.output_writers[:profiles] =
         JLD2Writer(model, profiles; filename = joinpath(output_dir, output_prefix * "_profiles.jld2"),
-                   schedule = AveragedTimeInterval(profile_interval), overwrite_existing = true)
+                   schedule = AveragedTimeInterval(profile_interval), overwrite_files = true)
 
     lwp = liquid_water_path(model; species=:cloud)
     rwp = liquid_water_path(model; species=:rain)
@@ -583,7 +583,7 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
 
     simulation.output_writers[:timeseries] =
         JLD2Writer(model, timeseries; filename = joinpath(output_dir, output_prefix * "_timeseries.jld2"),
-                   schedule = TimeInterval(timeseries_interval), overwrite_existing = true)
+                   schedule = TimeInterval(timeseries_interval), overwrite_files = true)
 
     z = Array(znodes(grid, Center()))
     k = searchsortedfirst(z, slice_height)
@@ -593,7 +593,7 @@ function add_output_writers!(simulation; output_dir, output_prefix, profile_inte
 
     simulation.output_writers[:slices] =
         JLD2Writer(model, slices; filename = joinpath(output_dir, output_prefix * "_slices.jld2"),
-                   schedule = TimeInterval(slice_interval), overwrite_existing = true)
+                   schedule = TimeInterval(slice_interval), overwrite_files = true)
     return nothing
 end
 

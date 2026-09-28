@@ -8,7 +8,7 @@ using Breeze.Thermodynamics: saturation_specific_humidity, PlanarLiquidSurface
 using Breeze.Microphysics.PredictedParticleProperties: CloudDroplets
 grid = RectilinearGrid(CPU(), Float64; size=(8, 8, 60), x=(0, 280), y=(0, 280), z=(0, 600), halo=(5, 5, 5), topology=(Periodic, Periodic, Bounded))
 constants = ThermodynamicConstants(Float64)
-rs = ReferenceState(grid, constants; surface_pressure=101300, potential_temperature=290)
+rs = ReferenceState(grid, constants; base_pressure=101300, potential_temperature=290)
 dynamics = AnelasticDynamics(rs)
 zc = Array(znodes(grid, Center())); ρᵣ = Array(interior(rs.density, 1, 1, :)); Δz = 10.0
 p3 = P3Microphysics(Float64; cloud=CloudDroplets(Float64; number_concentration=75e6))
@@ -19,8 +19,7 @@ qʳ₀(x, y, z) = (300 ≤ z ≤ 400) ? (2e-3 * (1 + 0.5 * sin(2π * x / 280) * 
 nʳ₀(x, y, z) = qʳ₀(x, y, z) / (4/3 * π * 1000 * (0.5e-3)^3)
 for bounded in (true, false)
     sa = BreezyLASSO.scalar_advection_schemes(5, p3, :qᵛ; bounded_condensates=bounded)
-    forcing = (; ρs = sedimentation_enthalpy_forcings(p3, sa; thermodynamic_constants=constants))
-    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants, momentum_advection=WENO(order=5), scalar_advection=sa, forcing)
+    model = AtmosphereModel(grid; formulation=:StaticEnergy, dynamics, microphysics=p3, thermodynamic_constants=constants, momentum_advection=WENO(order=5), scalar_advection=sa)
     set!(model; T=T₀, qᵛ=col(qsat), qʳ=qʳ₀, nʳ=nʳ₀)
     μ = model.microphysical_fields
     ρΔV = reshape(ρᵣ .* Δz .* (35.0^2), 1, 1, :)

@@ -14,7 +14,7 @@ using Breeze.Microphysics.PredictedParticleProperties: p3_state_tendencies
 
 FT = length(ARGS) ≥ 1 && ARGS[1] == "Float64" ? Float64 : Float32
 off = length(ARGS) ≥ 2 ? split(ARGS[2], ",") : String[]
-"all" ∈ off && (off = ["vadv", "thermo", "nudging", "sponge", "geo", "upper", "radiation", "surface", "closure", "enthalpy", "proj"])
+"all" ∈ off && (off = ["vadv", "thermo", "nudging", "sponge", "geo", "upper", "radiation", "surface", "closure", "proj"])
 Δt = 0.5
 scheme = :p3_aer2
 data = joinpath(@__DIR__, "..", "data", "covert2022_bin")
@@ -29,7 +29,6 @@ switches = Dict{Symbol, Any}()
 "radiation" ∈ off && (switches[:radiation] = nothing)
 "surface" ∈ off && (switches[:surface] = nothing)
 "closure" ∈ off && (switches[:closure] = nothing)
-"enthalpy" ∈ off && (switches[:sedimentation_enthalpy] = false)
 "proj" ∉ off && (switches[:aerosol_replenishment] = :diagnostic_ccn)
 println("off switches: ", off)
 case = lasso_ena_simulation(data; preset=:covert_public_bin, arch=CPU(), FT, Nx=8, Ny=8, Lx=280, Ly=280,
